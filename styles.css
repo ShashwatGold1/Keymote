@@ -1,0 +1,439 @@
+:root {
+  --bg: #0d0d0f;
+  --bg2: #1a1a1e;
+  --bg3: #26262b;
+  --text: #f5f5f7;
+  --text2: #8e8e93;
+  --accent: #6366f1;
+  --accent2: #818cf8;
+  --green: #22c55e;
+  --red: #ef4444;
+}
+
+[data-theme="light"] {
+  --bg: #f5f5f7;
+  --bg2: #ffffff;
+  --bg3: #e5e5ea;
+  --text: #1d1d1f;
+  --text2: #6e6e73;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* Custom Title Bar */
+.title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--bg3);
+  -webkit-app-region: drag;
+}
+
+.title-bar-drag {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  padding-left: 12px;
+}
+
+.app-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent);
+}
+
+.app-logo svg {
+  stroke: var(--accent);
+}
+
+.app-name {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.title-bar-controls {
+  display: flex;
+  -webkit-app-region: no-drag;
+}
+
+.title-btn {
+  width: 40px;
+  height: 36px;
+  border: none;
+  background: transparent;
+  color: var(--text2);
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.title-btn:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+
+.title-btn.close:hover {
+  background: var(--red);
+  color: #fff;
+}
+
+.title-btn.theme {
+  font-size: 14px;
+}
+
+.title-btn.theme:hover {
+  background: var(--bg3);
+}
+
+/* Main Content */
+.main-content {
+  flex: 1;
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Status Card */
+.status-card {
+  background: var(--bg2);
+  border-radius: 12px;
+  padding: 14px;
+  text-align: center;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  animation: pulse 2s infinite;
+}
+
+.status-connected .status-dot {
+  background: var(--green);
+}
+
+.status-error .status-dot {
+  background: var(--red);
+  animation: none;
+}
+
+.status-text {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.status-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.status-detail {
+  color: var(--text2);
+  font-size: 11px;
+}
+
+.device-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 10px;
+}
+
+@keyframes pulse {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* QR Section */
+.qr-section {
+  background: var(--bg2);
+  border-radius: 12px;
+  padding: 16px;
+  text-align: center;
+}
+
+.qr-section h2 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 12px;
+}
+
+.qr-container {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.qr-placeholder {
+  width: 140px;
+  height: 140px;
+  background: var(--bg3);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.qr-code {
+  width: 140px;
+  height: 140px;
+  border-radius: 8px;
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--bg);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.connection-url {
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.connection-url:hover {
+  text-decoration: underline;
+}
+
+/* Devices Section */
+.devices-section {
+  background: var(--bg2);
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.devices-section h2 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 10px;
+}
+
+.device-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  background: var(--bg3);
+  border-radius: 8px;
+}
+
+.device-icon {
+  font-size: 20px;
+}
+
+.device-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.device-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.device-status {
+  font-size: 10px;
+  color: var(--green);
+}
+
+.ping-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--green);
+  border-radius: 50%;
+}
+
+/* Instructions */
+.instructions {
+  background: var(--bg2);
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.instructions h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 10px;
+}
+
+.instructions ol {
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.6;
+}
+
+/* Theme Toggle */
+.theme-toggle {
+  position: absolute;
+  bottom: 50px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg3);
+  cursor: pointer;
+  font-size: 16px;
+  transition: transform 0.2s;
+}
+
+.theme-toggle:hover {
+  transform: scale(1.1);
+}
+
+/* Footer */
+.app-footer {
+  padding: 10px;
+  text-align: center;
+  color: var(--text2);
+  font-size: 10px;
+  border-top: 1px solid var(--bg3);
+}
+
+/* PIN Authentication Section */
+.pin-section {
+  background: var(--bg2);
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.pin-card {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border-radius: 10px;
+  padding: 14px;
+  color: #fff;
+}
+
+.pin-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pin-icon {
+  font-size: 18px;
+}
+
+.pin-title {
+  font-weight: 700;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.pin-details {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.pin-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+}
+
+.pin-item:first-child {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.pin-label {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.pin-value {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.pin-code {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 18px;
+  letter-spacing: 3px;
+}
+
+.pin-note {
+  font-size: 10px;
+  opacity: 0.7;
+  text-align: center;
+}

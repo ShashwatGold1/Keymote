@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+*.exe
+*.apk
+
+# Capacitor
+keymote-app/android/.gradle/
+keymote-app/android/app/build/
+keymote-app/android/build/
+keymote-app/android/local.properties
+keymote-app/android/.idea/
+keymote-app/node_modules/
+
+# System files
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Generated
+device-tokens.json
+keyboard-helper.ps1

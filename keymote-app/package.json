@@ -1,0 +1,26 @@
+{
+  "name": "keymote-app",
+  "version": "1.0.0",
+  "description": "Keymote - Remote Control Mobile App",
+  "main": "index.js",
+  "scripts": {
+    "build": "echo 'No build needed - static files'",
+    "cap:init": "npx cap init Keymote com.keymote.app --web-dir src",
+    "cap:add": "npx cap add android",
+    "cap:sync": "npx cap sync",
+    "cap:open": "npx cap open android"
+  },
+  "keywords": [
+    "remote",
+    "control",
+    "keymote"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@capacitor-community/speech-recognition": "^7.0.1",
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/cli": "^8.0.0",
+    "@capacitor/core": "^8.0.0"
+  }
+}
