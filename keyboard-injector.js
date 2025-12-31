@@ -120,7 +120,8 @@ const VK_CODES = {
     'Quote': 0xDE, "'": 0xDE
 };
 
-const PS_SCRIPT_PATH = path.join(__dirname, 'keyboard-helper.ps1');
+const os = require('os');
+const PS_SCRIPT_PATH = path.join(os.tmpdir(), 'keymote-keyboard-helper.ps1');
 
 const PS_SCRIPT_CONTENT = `
 param(

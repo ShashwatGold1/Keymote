@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getTheme: () => ipcRenderer.invoke('get-theme'),
     setTheme: (theme) => ipcRenderer.send('set-theme', theme),
 
+    // Startup (auto-launch)
+    getAutoLaunch: () => ipcRenderer.invoke('get-auto-launch'),
+    setAutoLaunch: (enabled) => ipcRenderer.invoke('set-auto-launch', enabled),
+
     // Window controls
     minimizeWindow: () => ipcRenderer.send('window-minimize'),
     closeWindow: () => ipcRenderer.send('window-close'),
@@ -24,3 +28,4 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('theme-changed', (event, theme) => callback(theme));
     }
 });
+

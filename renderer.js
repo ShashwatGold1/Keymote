@@ -16,7 +16,8 @@ const el = {
     closeBtn: document.getElementById('closeBtn'),
     pinSection: document.getElementById('pinSection'),
     pinCode: document.getElementById('pinCode'),
-    computerName: document.getElementById('computerName')
+    computerName: document.getElementById('computerName'),
+    startupToggle: document.getElementById('startupToggle')
 };
 
 // Theme
@@ -94,6 +95,18 @@ async function init() {
     el.themeToggle.addEventListener('click', toggleTheme);
     el.minimizeBtn?.addEventListener('click', () => window.electronAPI.minimizeWindow());
     el.closeBtn?.addEventListener('click', () => window.electronAPI.closeWindow());
+
+    // Startup toggle
+    if (el.startupToggle) {
+        // Load initial state
+        const isEnabled = await window.electronAPI.getAutoLaunch();
+        el.startupToggle.checked = isEnabled;
+
+        // Handle toggle change
+        el.startupToggle.addEventListener('change', async () => {
+            await window.electronAPI.setAutoLaunch(el.startupToggle.checked);
+        });
+    }
 
     // IPC listeners
     window.electronAPI.onServerReady(displayServerInfo);

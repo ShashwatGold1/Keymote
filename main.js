@@ -3,7 +3,7 @@
  * Turn your phone into a wireless keyboard & mouse for your computer
  */
 
-const { app, BrowserWindow, ipcMain, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, Tray, Menu } = require('electron');
 const path = require('path');
 const QRCode = require('qrcode');
 
@@ -36,6 +36,7 @@ try {
     };
 }
 const os = require('os');
+const AutoLaunch = require('auto-launch');
 
 const PORT = 8765;
 
@@ -46,7 +47,7 @@ const COMPUTER_NAME = os.hostname();
 // Token storage for persistent authentication
 class TokenStorage {
     constructor() {
-        this.tokensFile = path.join(__dirname, 'device-tokens.json');
+        this.tokensFile = path.join(app.getPath('userData'), 'device-tokens.json');
         this.tokens = this.loadTokens();
     }
 
@@ -93,6 +94,9 @@ let discoveryService;
 let screenCapturer;
 let serverInfo = null;
 let windowReady = false;
+let tray = null;
+let autoLauncher = null;
+let isQuitting = false;
 
 /**
  * Create the main application window
@@ -130,10 +134,42 @@ function createWindow() {
         mainWindow.show();
     });
 
-    // Handle window close
+    // Minimize to tray on close (instead of quit)
+    mainWindow.on('close', (event) => {
+        if (!isQuitting) {
+            event.preventDefault();
+            mainWindow.hide();
+        }
+    });
+
     mainWindow.on('closed', () => {
         mainWindow = null;
         windowReady = false;
+    });
+}
+
+/**
+ * Create system tray icon
+ */
+function createTray() {
+    const iconPath = path.join(__dirname, 'assets', 'icon.png');
+    tray = new Tray(iconPath);
+
+    const contextMenu = Menu.buildFromTemplate([
+        { label: 'Show Keymote', click: () => { if (mainWindow) mainWindow.show(); } },
+        { type: 'separator' },
+        { label: 'Quit', click: () => { isQuitting = true; app.quit(); } }
+    ]);
+
+    tray.setToolTip('Keymote - Remote Input');
+    tray.setContextMenu(contextMenu);
+
+    // Click tray to show window
+    tray.on('click', () => {
+        if (mainWindow) {
+            mainWindow.show();
+            mainWindow.focus();
+        }
     });
 }
 
@@ -267,9 +303,36 @@ ipcMain.on('set-theme', (event, theme) => {
     nativeTheme.themeSource = theme;
 });
 
+// Startup toggle handlers
+ipcMain.handle('get-auto-launch', async () => {
+    if (autoLauncher) {
+        return await autoLauncher.isEnabled();
+    }
+    return false;
+});
+
+ipcMain.handle('set-auto-launch', async (event, enabled) => {
+    if (autoLauncher) {
+        if (enabled) {
+            await autoLauncher.enable();
+        } else {
+            await autoLauncher.disable();
+        }
+        return enabled;
+    }
+    return false;
+});
+
 // App lifecycle
 app.whenReady().then(async () => {
+    // Initialize auto-launcher
+    autoLauncher = new AutoLaunch({
+        name: 'Keymote',
+        path: app.getPath('exe')
+    });
+
     createWindow();
+    createTray();
     await initializeServices();
 
     app.on('activate', () => {
@@ -279,17 +342,20 @@ app.whenReady().then(async () => {
     });
 });
 
-app.on('window-all-closed', async () => {
-    // Cleanup
+// Don't quit when window is closed (runs in tray)
+app.on('window-all-closed', () => {
+    // Don't quit - keep running in tray
+    // Only cleanup when actually quitting
+});
+
+// Before quit - cleanup
+app.on('before-quit', async () => {
+    isQuitting = true;
     if (wsServer) {
         await wsServer.stop();
     }
     if (discoveryService) {
         await discoveryService.stop();
-    }
-
-    if (process.platform !== 'darwin') {
-        app.quit();
     }
 });
 
