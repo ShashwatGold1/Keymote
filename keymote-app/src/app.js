@@ -191,33 +191,52 @@ class RemoteInputApp {
         }
     }
 
-    // Native QR Scanner - simplified approach
+    // Hybrid QR Scanner - using native plugin for permission, then browser for logic
     async startNativeQrScanner() {
-        console.log('Starting QR Scanner...');
+        console.log('Starting Hybrid QR Scanner...');
 
-        // First try using the camera
         try {
+            // 1. Force permission check using Capacitor Camera plugin (very reliable)
+            const { Camera } = window.Capacitor?.Plugins || {};
+            if (Camera) {
+                try {
+                    const status = await Camera.checkPermissions();
+                    if (status.camera !== 'granted') {
+                        await Camera.requestPermissions();
+                    }
+                } catch (e) {
+                    console.log('Camera plugin error (non-fatal):', e);
+                }
+            }
+
+            // 2. Now that we've requested permission natively, try getUserMedia
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: { facingMode: 'environment' }
             });
 
-            // Camera available - show scanner overlay
+            // If we got here, camera is authorized and working
             this.showCameraScannerOverlay(stream);
         } catch (error) {
-            console.log('Camera not available:', error);
-            // Fall back to manual input
+            console.error('Hybrid scanner failure:', error);
+            // Show more detailed error for diagnosis
+            const errorMsg = error.name + ': ' + error.message;
+            alert('Camera Error: ' + errorMsg + '\n\nTry manual input instead.');
             this.showManualQrInput();
         }
     }
 
     showCameraScannerOverlay(stream) {
+        // Remove any existing overlay
+        const oldOverlay = document.getElementById('qrScannerOverlay');
+        if (oldOverlay) oldOverlay.remove();
+
         // Create scanner overlay
         const overlay = document.createElement('div');
         overlay.id = 'qrScannerOverlay';
         overlay.className = 'qr-scanner-overlay';
         overlay.innerHTML = `
             <div class="scanner-header">
-                <button class="close-scanner-btn" onclick="window.app.closeScannerOverlay()">✕</button>
+                <button id="closeScannerBtn" class="close-scanner-btn">✕</button>
                 <span>Scan QR Code</span>
             </div>
             <div class="scanner-viewport">
@@ -230,20 +249,23 @@ class RemoteInputApp {
         overlay.style.display = 'flex';
         document.body.appendChild(overlay);
 
-        // Setup video
         const video = overlay.querySelector('#qrVideo');
+        const canvas = overlay.querySelector('#qrCanvas');
+        const closeBtn = overlay.querySelector('#closeScannerBtn');
+
         video.srcObject = stream;
         this.qrStream = stream;
         this.qrScanning = true;
 
-        // Start scanning loop
+        closeBtn.onclick = () => this.stopQrScanner();
+
         video.onloadedmetadata = () => {
             video.play();
-            this.scanQrLoop(video, overlay.querySelector('#qrCanvas'));
+            this.scanQrLoop(video, canvas);
         };
     }
 
-    closeScannerOverlay() {
+    stopQrScanner() {
         this.qrScanning = false;
         if (this.qrStream) {
             this.qrStream.getTracks().forEach(t => t.stop());
@@ -267,7 +289,7 @@ class RemoteInputApp {
 
             if (code) {
                 console.log('QR detected:', code.data);
-                this.closeScannerOverlay();
+                this.stopQrScanner();
                 this.handleQrData(code.data);
                 return;
             }
