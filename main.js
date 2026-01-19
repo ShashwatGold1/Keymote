@@ -11,6 +11,7 @@ const QRCode = require('qrcode');
 const WebSocketServer = require('./websocket-server');
 const DiscoveryService = require('./discovery');
 const ScreenCapturer = require('./screen-capturer');
+const TailscaleService = require('./tailscale-service');
 let keyboardInjector;
 let mouseInjector;
 
@@ -181,7 +182,18 @@ async function sendServerInfoToRenderer() {
         return;
     }
     const url = discoveryService.getConnectionURL();
-    const qrCode = await generateQRCode(url);
+
+    // Create connection data for QR code (contains all info needed to connect)
+    const connectionData = {
+        url: url,
+        pin: SESSION_PIN,
+        name: COMPUTER_NAME,
+        ip: serverInfo.ip,
+        port: serverInfo.port,
+        tailscale: serverInfo.tailscaleIP
+    };
+
+    const qrCode = await generateQRCode(JSON.stringify(connectionData));
     mainWindow.webContents.send('server-ready', {
         ...serverInfo,
         url,
@@ -321,6 +333,24 @@ ipcMain.handle('set-auto-launch', async (event, enabled) => {
         return enabled;
     }
     return false;
+});
+
+// Tailscale control handlers
+ipcMain.handle('tailscale-status', async () => {
+    return await TailscaleService.getStatus();
+});
+
+ipcMain.handle('tailscale-connect', async () => {
+    const connected = await TailscaleService.connect();
+    if (connected) {
+        // Resend server info with new Tailscale IP
+        setTimeout(sendServerInfoToRenderer, 1000);
+    }
+    return connected;
+});
+
+ipcMain.handle('tailscale-disconnect', async () => {
+    return await TailscaleService.disconnect();
 });
 
 // App lifecycle

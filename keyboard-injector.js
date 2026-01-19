@@ -167,16 +167,19 @@ public class KeyboardSim {
 
     public static void PressVk(byte vk) {
         keybd_event(vk, 0, 0, UIntPtr.Zero);
-        Thread.Sleep(10);
+        Thread.Sleep(15);
         keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        Thread.Sleep(5);
     }
 
     public static void KeyDown(byte vk) {
         keybd_event(vk, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(5);
     }
 
     public static void KeyUp(byte vk) {
         keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        Thread.Sleep(5);
     }
     
     public static void SendKeyWithModifiers(byte vk, bool ctrl, bool alt, bool shift, bool win) {
@@ -185,14 +188,15 @@ public class KeyboardSim {
         if (shift) KeyDown(VK_SHIFT);
         if (win) KeyDown(VK_LWIN);
         
-        Thread.Sleep(10);
+        Thread.Sleep(15);
         PressVk(vk);
-        Thread.Sleep(10);
+        Thread.Sleep(15);
         
         if (win) KeyUp(VK_LWIN);
         if (shift) KeyUp(VK_SHIFT);
         if (alt) KeyUp(VK_ALT);
         if (ctrl) KeyUp(VK_CONTROL);
+        Thread.Sleep(10);
     }
     
     public static void PressWinKey() {
@@ -206,8 +210,12 @@ public class KeyboardSim {
 switch ($Action) {
     "text" {
         if ($Text) {
-            $escapedText = $Text -replace '[+^%~(){}\\[\\]]', '{$0}'
-            [System.Windows.Forms.SendKeys]::SendWait($escapedText)
+            # Send text character by character for better reliability
+            foreach ($char in $Text.ToCharArray()) {
+                $escapedChar = $char.ToString() -replace '[+^%~(){}\\[\\]]', '{$0}'
+                [System.Windows.Forms.SendKeys]::SendWait($escapedChar)
+                Start-Sleep -Milliseconds 5
+            }
             Write-Output "OK"
         }
     }

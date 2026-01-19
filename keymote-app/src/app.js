@@ -20,7 +20,8 @@ class RemoteInputApp {
             blocked: document.getElementById('browserBlockedScreen'),
             splash: document.getElementById('splashScreen'),
             login: document.getElementById('loginScreen'),
-            main: document.getElementById('mainApp')
+            main: document.getElementById('mainApp'),
+            settings: document.getElementById('settingsScreen')
         };
 
         // Login screen elements
@@ -55,15 +56,41 @@ class RemoteInputApp {
             toggleMouse: document.getElementById('toggleMouse'),
             mouseContainer: document.getElementById('mouseContainer'),
             keyboard: document.querySelector('.keyboard'),
-            // Settings modal elements
+            // Settings screen elements
             settingsBtn: document.getElementById('settingsBtn'),
-            settingsModal: document.getElementById('settingsModal'),
-            closeSettingsBtn: document.getElementById('closeSettingsBtn'),
+            settingsBackBtn: document.getElementById('settingsBackBtn'),
             serverAddressInput: document.getElementById('serverAddress'),
             computerNameInput: document.getElementById('computerNameInput'),
             pinInput: document.getElementById('pinInput'),
             saveSettingsBtn: document.getElementById('saveSettingsBtn'),
-            authStatus: document.getElementById('authStatus')
+            authStatus: document.getElementById('authStatus'),
+            splashDurationInput: document.getElementById('splashDurationInput'),
+            splashDurationValue: document.getElementById('splashDurationValue'),
+            // Floating toolbar elements
+            floatingToolbar: document.getElementById('floatingToolbar'),
+            toolbarHandle: document.getElementById('toolbarHandle'),
+            toolbarContent: document.getElementById('toolbarContent'),
+            toolbarToggle: document.getElementById('toolbarToggle'),
+            fsScrollUp: document.getElementById('fsScrollUp'),
+            fsLeftClick: document.getElementById('fsLeftClick'),
+            fsRightClick: document.getElementById('fsRightClick'),
+            fsScrollDown: document.getElementById('fsScrollDown'),
+            fsVoiceBtn: document.getElementById('fsVoiceBtn'),
+            // Screen settings elements
+            screenOffsetX: document.getElementById('screenOffsetX'),
+            screenOffsetXValue: document.getElementById('screenOffsetXValue'),
+            screenOffsetXMinus: document.getElementById('screenOffsetXMinus'),
+            screenOffsetXPlus: document.getElementById('screenOffsetXPlus'),
+            screenOffsetY: document.getElementById('screenOffsetY'),
+            screenOffsetYValue: document.getElementById('screenOffsetYValue'),
+            screenOffsetYMinus: document.getElementById('screenOffsetYMinus'),
+            screenOffsetYPlus: document.getElementById('screenOffsetYPlus'),
+            screenZoom: document.getElementById('screenZoom'),
+            screenZoomValue: document.getElementById('screenZoomValue'),
+            resetScreenSettings: document.getElementById('resetScreenSettings'),
+            screenImage: document.getElementById('screenImage'),
+            // QR Scanner button
+            scanQrBtn: document.getElementById('scanQrBtn')
         };
         this.init();
     }
@@ -82,14 +109,15 @@ class RemoteInputApp {
             return;
         }
 
-        // Start with splash screen, transition to login after 3.5 seconds
+        // Start with splash screen, transition to login after configurable duration
+        const splashDuration = parseInt(localStorage.getItem('splashDuration') || '2500', 10);
         this.showScreen('splash');
         setTimeout(() => {
             this.showScreen('login');
             // Pre-populate login fields with saved values
             if (this.loginEl.serverAddress) this.loginEl.serverAddress.value = this.customServer;
             if (this.loginEl.computerName) this.loginEl.computerName.value = this.computerName;
-        }, 3500);
+        }, splashDuration);
     }
 
     showScreen(screen) {
@@ -98,6 +126,7 @@ class RemoteInputApp {
         if (this.screens.splash) this.screens.splash.style.display = 'none';
         if (this.screens.login) this.screens.login.style.display = 'none';
         if (this.screens.main) this.screens.main.style.display = 'none';
+        if (this.screens.settings) this.screens.settings.style.display = 'none';
 
         // Show requested screen
         if (screen === 'blocked' && this.screens.blocked) {
@@ -108,6 +137,8 @@ class RemoteInputApp {
             this.screens.login.style.display = 'flex';
         } else if (screen === 'main' && this.screens.main) {
             this.screens.main.style.display = 'flex';
+        } else if (screen === 'settings' && this.screens.settings) {
+            this.screens.settings.style.display = 'flex';
         }
     }
 
@@ -115,11 +146,21 @@ class RemoteInputApp {
         // Show saved connections if any exist
         this.renderSavedDevices();
 
-        // Toggle for new connection form
+        // QR Scanner button - use native MLKit scanner
+        const scanBtn = document.getElementById('scanQrBtn');
+        if (scanBtn) {
+            scanBtn.addEventListener('click', async () => {
+                console.log('Scan QR button clicked - starting native scanner');
+                await this.startNativeQrScanner();
+            });
+        }
+
+        // Toggle for manual connection form
         if (this.loginEl.newConnectionToggle) {
             this.loginEl.newConnectionToggle.onclick = () => {
                 if (this.loginEl.loginForm) {
-                    this.loginEl.loginForm.classList.toggle('collapsed');
+                    const isHidden = this.loginEl.loginForm.style.display === 'none';
+                    this.loginEl.loginForm.style.display = isHidden ? 'block' : 'none';
                 }
             };
         }
@@ -147,6 +188,133 @@ class RemoteInputApp {
                 // Connect
                 this.connect();
             };
+        }
+    }
+
+    // Native QR Scanner - simplified approach
+    async startNativeQrScanner() {
+        console.log('Starting QR Scanner...');
+
+        // First try using the camera
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment' }
+            });
+
+            // Camera available - show scanner overlay
+            this.showCameraScannerOverlay(stream);
+        } catch (error) {
+            console.log('Camera not available:', error);
+            // Fall back to manual input
+            this.showManualQrInput();
+        }
+    }
+
+    showCameraScannerOverlay(stream) {
+        // Create scanner overlay
+        const overlay = document.createElement('div');
+        overlay.id = 'qrScannerOverlay';
+        overlay.className = 'qr-scanner-overlay';
+        overlay.innerHTML = `
+            <div class="scanner-header">
+                <button class="close-scanner-btn" onclick="window.app.closeScannerOverlay()">✕</button>
+                <span>Scan QR Code</span>
+            </div>
+            <div class="scanner-viewport">
+                <video id="qrVideo" autoplay playsinline></video>
+                <canvas id="qrCanvas" style="display:none;"></canvas>
+                <div class="scanner-frame"></div>
+            </div>
+            <p class="scanner-hint">Point camera at the QR code on your PC</p>
+        `;
+        overlay.style.display = 'flex';
+        document.body.appendChild(overlay);
+
+        // Setup video
+        const video = overlay.querySelector('#qrVideo');
+        video.srcObject = stream;
+        this.qrStream = stream;
+        this.qrScanning = true;
+
+        // Start scanning loop
+        video.onloadedmetadata = () => {
+            video.play();
+            this.scanQrLoop(video, overlay.querySelector('#qrCanvas'));
+        };
+    }
+
+    closeScannerOverlay() {
+        this.qrScanning = false;
+        if (this.qrStream) {
+            this.qrStream.getTracks().forEach(t => t.stop());
+            this.qrStream = null;
+        }
+        const overlay = document.getElementById('qrScannerOverlay');
+        if (overlay) overlay.remove();
+    }
+
+    scanQrLoop(video, canvas) {
+        if (!this.qrScanning) return;
+
+        if (video.readyState === video.HAVE_ENOUGH_DATA && typeof jsQR !== 'undefined') {
+            const ctx = canvas.getContext('2d');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0);
+
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+            if (code) {
+                console.log('QR detected:', code.data);
+                this.closeScannerOverlay();
+                this.handleQrData(code.data);
+                return;
+            }
+        }
+
+        requestAnimationFrame(() => this.scanQrLoop(video, canvas));
+    }
+
+    showManualQrInput() {
+        // If native scanner fails, show a prompt for manual QR data entry
+        const qrData = prompt('Camera not available.\n\nPaste QR code data or enter server URL:');
+        if (qrData) {
+            this.handleQrData(qrData);
+        }
+    }
+
+    handleQrData(data) {
+        try {
+            const connectionData = JSON.parse(data);
+            console.log('QR Connection data:', connectionData);
+
+            // Extract connection info
+            this.customServer = connectionData.url
+                ? connectionData.url.replace('http://', '').replace('https://', '')
+                : `${connectionData.ip}:${connectionData.port}`;
+            this.computerName = connectionData.name || '';
+            this.pendingPin = connectionData.pin || '';
+            this.pendingRememberMe = true;
+
+            // Save settings
+            localStorage.setItem('customServer', this.customServer);
+            localStorage.setItem('computerName', this.computerName);
+
+            // Connect immediately
+            this.updateLoginStatus('Connecting via QR...', 'connecting');
+            this.connect();
+        } catch (error) {
+            console.error('Invalid QR data:', error);
+            // Try treating it as a simple URL
+            if (data && data.includes(':')) {
+                this.customServer = data.replace('http://', '').replace('https://', '');
+                localStorage.setItem('customServer', this.customServer);
+                this.updateLoginStatus('Connecting...', 'connecting');
+                this.connect();
+            } else {
+                alert('Invalid QR code. Please scan the QR from your Keymote PC app.');
+            }
         }
     }
 
@@ -210,15 +378,15 @@ class RemoteInputApp {
             this.loginEl.savedList.innerHTML = savedKeys.map(key => {
                 const device = this.savedDevices[key];
                 return `
-                    <div class="saved-device" data-key="${key}">
+    < div class="saved-device" data - key="${key}" >
                         <span class="saved-device-icon">🖥️</span>
                         <div class="saved-device-info">
                             <div class="saved-device-name">${device.computerName || 'Unknown PC'}</div>
                             <div class="saved-device-address">${device.serverAddress || 'Local Network'}</div>
                         </div>
                         <button class="saved-device-delete" data-key="${key}">×</button>
-                    </div>
-                `;
+                    </div >
+    `;
             }).join('');
 
             // Add click handlers
@@ -272,22 +440,42 @@ class RemoteInputApp {
     setupListeners() {
         this.el.theme.onclick = () => this.applyTheme(this.theme === 'dark' ? 'light' : 'dark');
 
-        // Settings modal handlers
+        // Settings screen handlers
         if (this.el.settingsBtn) {
             this.el.settingsBtn.onclick = () => {
                 // Pre-populate fields with saved values
-                this.el.serverAddressInput.value = this.customServer;
-                this.el.computerNameInput.value = this.computerName;
-                this.el.pinInput.value = '';
-                this.el.authStatus.textContent = '';
-                this.el.authStatus.className = 'auth-status';
-                this.el.settingsModal.style.display = 'flex';
+                if (this.el.serverAddressInput) this.el.serverAddressInput.value = this.customServer;
+                if (this.el.computerNameInput) this.el.computerNameInput.value = this.computerName;
+                if (this.el.pinInput) this.el.pinInput.value = '';
+                if (this.el.authStatus) {
+                    this.el.authStatus.textContent = '';
+                    this.el.authStatus.className = 'settings-status';
+                }
+                // Set splash duration slider
+                const savedSplashDuration = parseInt(localStorage.getItem('splashDuration') || '2500', 10);
+                if (this.el.splashDurationInput) this.el.splashDurationInput.value = savedSplashDuration;
+                if (this.el.splashDurationValue) this.el.splashDurationValue.textContent = (savedSplashDuration / 1000).toFixed(1) + 's';
+                this.showScreen('settings');
             };
         }
 
-        if (this.el.closeSettingsBtn) {
-            this.el.closeSettingsBtn.onclick = () => {
-                this.el.settingsModal.style.display = 'none';
+        // Splash duration slider handler
+        if (this.el.splashDurationInput) {
+            this.el.splashDurationInput.oninput = () => {
+                const val = parseInt(this.el.splashDurationInput.value, 10);
+                if (this.el.splashDurationValue) this.el.splashDurationValue.textContent = (val / 1000).toFixed(1) + 's';
+                localStorage.setItem('splashDuration', val.toString());
+            };
+        }
+
+        // Screen settings handlers
+        this.loadScreenSettings();
+        this.setupScreenSettingsListeners();
+
+        // Settings back button handler
+        if (this.el.settingsBackBtn) {
+            this.el.settingsBackBtn.onclick = () => {
+                this.showScreen('main');
             };
         }
 
@@ -304,8 +492,8 @@ class RemoteInputApp {
                 // Store PIN temporarily for auth (not in localStorage for security)
                 this.pendingPin = pin;
 
-                // Close modal and reconnect
-                this.el.settingsModal.style.display = 'none';
+                // Go back to main and reconnect
+                this.showScreen('main');
                 this.disconnect();
                 this.connect();
             };
@@ -441,6 +629,8 @@ class RemoteInputApp {
                     screenViewer.classList.add('fullscreen', 'rotated');
                     fullscreenBtn.style.display = 'none'; // Hide Max button in fullscreen
                     if (rotateBtn) rotateBtn.textContent = '↺ Normal';
+                    // Show floating toolbar
+                    if (this.el.floatingToolbar) this.el.floatingToolbar.style.display = 'flex';
                 }
                 updateBackBtn();
             };
@@ -465,6 +655,8 @@ class RemoteInputApp {
                 }
                 if (rotateBtn) rotateBtn.textContent = '🔄 Rotate';
                 exitFullscreenBtn.style.display = 'none';
+                // Hide floating toolbar
+                if (this.el.floatingToolbar) this.el.floatingToolbar.style.display = 'none';
             };
         }
 
@@ -522,6 +714,46 @@ class RemoteInputApp {
         document.getElementById('scrollUp')?.addEventListener('click', () => this.sendMouse('scroll', { delta: 120 }));
         document.getElementById('scrollDown')?.addEventListener('click', () => this.sendMouse('scroll', { delta: -120 }));
 
+        // Toolbar button handlers (fullscreen mode controls)
+        if (this.el.fsLeftClick) this.el.fsLeftClick.onclick = () => this.sendMouse('left');
+        if (this.el.fsRightClick) this.el.fsRightClick.onclick = () => this.sendMouse('right');
+        if (this.el.fsScrollUp) this.el.fsScrollUp.onclick = () => this.sendMouse('scroll', { delta: 120 });
+        if (this.el.fsScrollDown) this.el.fsScrollDown.onclick = () => this.sendMouse('scroll', { delta: -120 });
+
+        // Voice input button
+        if (this.el.fsVoiceBtn) {
+            this.el.fsVoiceBtn.onclick = async () => {
+                try {
+                    // Use Capacitor speech recognition if available
+                    if (window.Capacitor?.Plugins?.SpeechRecognition) {
+                        const { SpeechRecognition } = window.Capacitor.Plugins;
+                        const permission = await SpeechRecognition.requestPermission();
+                        if (permission.speechRecognition === 'granted') {
+                            this.el.fsVoiceBtn.classList.add('listening');
+                            await SpeechRecognition.start({
+                                language: 'en-US',
+                                partialResults: false,
+                                popup: true
+                            });
+                            SpeechRecognition.addListener('partialResults', (data) => {
+                                if (data.matches && data.matches.length > 0) {
+                                    const text = data.matches[0];
+                                    this.el.input.value += text + ' ';
+                                    this.sendText(text + ' ');
+                                }
+                            });
+                        }
+                    } else {
+                        // Fallback: focus input to trigger Android keyboard with voice
+                        this.el.input?.focus();
+                    }
+                } catch (err) {
+                    console.error('Voice input error:', err);
+                    this.el.input?.focus();
+                }
+            };
+        }
+
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible' && !this.isConnected) this.connect();
         });
@@ -533,10 +765,16 @@ class RemoteInputApp {
         // Use custom server if set, otherwise auto-detect from current page
         let url;
         if (this.customServer) {
-            // Add ws:// or wss:// prefix if not present
-            const server = this.customServer.includes('://')
-                ? this.customServer
-                : `ws://${this.customServer}`;
+            let server = this.customServer.trim();
+            // Convert HTTP/HTTPS URLs to WebSocket protocols
+            if (server.startsWith('https://')) {
+                server = 'wss://' + server.slice(8);
+            } else if (server.startsWith('http://')) {
+                server = 'ws://' + server.slice(7);
+            } else if (!server.includes('://')) {
+                // No protocol - default to ws://
+                server = `ws://${server}`;
+            }
             url = server;
         } else {
             url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
@@ -769,6 +1007,93 @@ class RemoteInputApp {
     getMods() { return { ...this.modifiers }; }
     hasModifiers() { return this.modifiers.ctrl || this.modifiers.alt || this.modifiers.shift || this.modifiers.win; }
     releaseMods() { ['ctrl', 'alt', 'shift', 'win'].forEach(m => { this.modifiers[m] = false; this.el[m]?.classList.remove('active'); }); }
+
+    // Screen settings methods
+    loadScreenSettings() {
+        this.screenOffsetX = parseInt(localStorage.getItem('screenOffsetX') || '0', 10);
+        this.screenOffsetY = parseInt(localStorage.getItem('screenOffsetY') || '0', 10);
+        this.screenZoom = parseInt(localStorage.getItem('screenZoom') || '100', 10);
+        this.applyScreenTransform();
+    }
+
+    setupScreenSettingsListeners() {
+        const updateX = (val) => {
+            this.screenOffsetX = Math.max(-200, Math.min(200, val));
+            if (this.el.screenOffsetX) this.el.screenOffsetX.value = this.screenOffsetX;
+            if (this.el.screenOffsetXValue) this.el.screenOffsetXValue.value = this.screenOffsetX;
+            localStorage.setItem('screenOffsetX', this.screenOffsetX.toString());
+            this.applyScreenTransform();
+        };
+
+        const updateY = (val) => {
+            this.screenOffsetY = Math.max(-200, Math.min(200, val));
+            if (this.el.screenOffsetY) this.el.screenOffsetY.value = this.screenOffsetY;
+            if (this.el.screenOffsetYValue) this.el.screenOffsetYValue.value = this.screenOffsetY;
+            localStorage.setItem('screenOffsetY', this.screenOffsetY.toString());
+            this.applyScreenTransform();
+        };
+
+        const updateZoom = (val) => {
+            this.screenZoom = Math.max(50, Math.min(200, val));
+            if (this.el.screenZoom) this.el.screenZoom.value = this.screenZoom;
+            if (this.el.screenZoomValue) this.el.screenZoomValue.value = this.screenZoom;
+            localStorage.setItem('screenZoom', this.screenZoom.toString());
+            this.applyScreenTransform();
+        };
+
+        // X offset controls
+        if (this.el.screenOffsetX) {
+            this.el.screenOffsetX.value = this.screenOffsetX;
+            this.el.screenOffsetX.oninput = () => updateX(parseInt(this.el.screenOffsetX.value, 10));
+        }
+        if (this.el.screenOffsetXValue) {
+            this.el.screenOffsetXValue.value = this.screenOffsetX;
+            this.el.screenOffsetXValue.onchange = () => updateX(parseInt(this.el.screenOffsetXValue.value, 10) || 0);
+        }
+        if (this.el.screenOffsetXMinus) this.el.screenOffsetXMinus.onclick = () => updateX(this.screenOffsetX - 10);
+        if (this.el.screenOffsetXPlus) this.el.screenOffsetXPlus.onclick = () => updateX(this.screenOffsetX + 10);
+
+        // Y offset controls
+        if (this.el.screenOffsetY) {
+            this.el.screenOffsetY.value = this.screenOffsetY;
+            this.el.screenOffsetY.oninput = () => updateY(parseInt(this.el.screenOffsetY.value, 10));
+        }
+        if (this.el.screenOffsetYValue) {
+            this.el.screenOffsetYValue.value = this.screenOffsetY;
+            this.el.screenOffsetYValue.onchange = () => updateY(parseInt(this.el.screenOffsetYValue.value, 10) || 0);
+        }
+        if (this.el.screenOffsetYMinus) this.el.screenOffsetYMinus.onclick = () => updateY(this.screenOffsetY - 10);
+        if (this.el.screenOffsetYPlus) this.el.screenOffsetYPlus.onclick = () => updateY(this.screenOffsetY + 10);
+
+        // Zoom controls
+        if (this.el.screenZoom) {
+            this.el.screenZoom.value = this.screenZoom;
+            this.el.screenZoom.oninput = () => updateZoom(parseInt(this.el.screenZoom.value, 10));
+        }
+        if (this.el.screenZoomValue) {
+            this.el.screenZoomValue.value = this.screenZoom;
+            this.el.screenZoomValue.onchange = () => updateZoom(parseInt(this.el.screenZoomValue.value, 10) || 100);
+        }
+
+        // Reset button
+        if (this.el.resetScreenSettings) {
+            this.el.resetScreenSettings.onclick = () => {
+                updateX(0);
+                updateY(0);
+                updateZoom(100);
+            };
+        }
+    }
+
+    applyScreenTransform() {
+        if (this.el.screenImage) {
+            const scale = this.screenZoom / 100;
+            this.el.screenImage.style.transform = `translate(${this.screenOffsetX}px, ${this.screenOffsetY}px) scale(${scale})`;
+            this.el.screenImage.style.transformOrigin = 'center center';
+        }
+    }
 }
 
-document.addEventListener('DOMContentLoaded', () => { window.app = new RemoteInputApp(); });
+document.addEventListener('DOMContentLoaded', () => {
+    window.app = new RemoteInputApp();
+});

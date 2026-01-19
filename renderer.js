@@ -9,6 +9,7 @@ const el = {
     qrPlaceholder: document.getElementById('qrPlaceholder'),
     qrCode: document.getElementById('qrCode'),
     connectionUrl: document.getElementById('connectionUrl'),
+    publicUrl: document.getElementById('publicUrl'),
     deviceBadge: document.getElementById('deviceBadge'),
     deviceName: document.getElementById('deviceName'),
     themeToggle: document.getElementById('themeToggle'),
@@ -61,6 +62,16 @@ function displayServerInfo(info) {
     el.connectionUrl.textContent = info.url;
     el.connectionUrl.href = info.url;
 
+    // Display Tailscale IP for remote access
+    if (el.publicUrl && info.tailscaleIP) {
+        const tailscaleUrl = `http://${info.tailscaleIP}:${info.port}`;
+        el.publicUrl.textContent = tailscaleUrl;
+        el.publicUrl.href = tailscaleUrl;
+        el.publicUrl.parentElement.style.display = 'block';
+    } else if (el.publicUrl) {
+        el.publicUrl.parentElement.style.display = 'none';
+    }
+
     // Display PIN and Computer Name
     if (info.pin && info.computerName) {
         el.pinCode.textContent = info.pin;
@@ -112,6 +123,13 @@ async function init() {
     window.electronAPI.onServerReady(displayServerInfo);
     window.electronAPI.onConnectionChange(handleConnectionChange);
     window.electronAPI.onThemeChanged(applyTheme);
+    window.electronAPI.onTunnelUrl((info) => {
+        if (el.publicUrl && info.publicUrl) {
+            el.publicUrl.textContent = info.publicUrl;
+            el.publicUrl.href = info.publicUrl;
+            el.publicUrl.parentElement.style.display = 'block';
+        }
+    });
 
     // Get initial state
     const serverInfo = await window.electronAPI.getServerInfo();

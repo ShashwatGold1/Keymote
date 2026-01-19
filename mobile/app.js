@@ -63,7 +63,9 @@ class RemoteInputApp {
             computerNameInput: document.getElementById('computerNameInput'),
             pinInput: document.getElementById('pinInput'),
             saveSettingsBtn: document.getElementById('saveSettingsBtn'),
-            authStatus: document.getElementById('authStatus')
+            authStatus: document.getElementById('authStatus'),
+            splashDurationInput: document.getElementById('splashDurationInput'),
+            splashDurationValue: document.getElementById('splashDurationValue')
         };
         this.init();
     }
@@ -82,14 +84,15 @@ class RemoteInputApp {
             return;
         }
 
-        // Start with splash screen, transition to login after 3.5 seconds
+        // Start with splash screen, transition to login after configurable duration
+        const splashDuration = parseInt(localStorage.getItem('splashDuration') || '2500', 10);
         this.showScreen('splash');
         setTimeout(() => {
             this.showScreen('login');
             // Pre-populate login fields with saved values
             if (this.loginEl.serverAddress) this.loginEl.serverAddress.value = this.customServer;
             if (this.loginEl.computerName) this.loginEl.computerName.value = this.computerName;
-        }, 3500);
+        }, splashDuration);
     }
 
     showScreen(screen) {
@@ -281,7 +284,20 @@ class RemoteInputApp {
                 this.el.pinInput.value = '';
                 this.el.authStatus.textContent = '';
                 this.el.authStatus.className = 'auth-status';
+                // Set splash duration slider
+                const savedSplashDuration = parseInt(localStorage.getItem('splashDuration') || '2500', 10);
+                if (this.el.splashDurationInput) this.el.splashDurationInput.value = savedSplashDuration;
+                if (this.el.splashDurationValue) this.el.splashDurationValue.textContent = (savedSplashDuration / 1000).toFixed(1) + 's';
                 this.el.settingsModal.style.display = 'flex';
+            };
+        }
+
+        // Splash duration slider handler
+        if (this.el.splashDurationInput) {
+            this.el.splashDurationInput.oninput = () => {
+                const val = parseInt(this.el.splashDurationInput.value, 10);
+                if (this.el.splashDurationValue) this.el.splashDurationValue.textContent = (val / 1000).toFixed(1) + 's';
+                localStorage.setItem('splashDuration', val.toString());
             };
         }
 

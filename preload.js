@@ -26,6 +26,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     onThemeChanged: (callback) => {
         ipcRenderer.on('theme-changed', (event, theme) => callback(theme));
-    }
+    },
+    onTunnelUrl: (callback) => {
+        ipcRenderer.on('tunnel-url', (event, info) => callback(info));
+    },
+
+    // Tailscale control
+    tailscaleStatus: () => ipcRenderer.invoke('tailscale-status'),
+    tailscaleConnect: () => ipcRenderer.invoke('tailscale-connect'),
+    tailscaleDisconnect: () => ipcRenderer.invoke('tailscale-disconnect')
 });
 

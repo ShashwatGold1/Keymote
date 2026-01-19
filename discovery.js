@@ -47,6 +47,26 @@ class DiscoveryService {
     }
 
     /**
+     * Get Tailscale IP if available (100.x.x.x range)
+     */
+    getTailscaleIP() {
+        const interfaces = os.networkInterfaces();
+        for (const name of Object.keys(interfaces)) {
+            // Tailscale interface is usually named "Tailscale" on Windows
+            const isTailscaleInterface = name.toLowerCase().includes('tailscale');
+            for (const iface of interfaces[name]) {
+                if (iface.family === 'IPv4' && !iface.internal) {
+                    // Tailscale uses 100.x.x.x CGNAT range
+                    if (iface.address.startsWith('100.') || isTailscaleInterface) {
+                        return { name, address: iface.address };
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
      * Start advertising the service
      */
     start() {
@@ -56,6 +76,7 @@ class DiscoveryService {
 
                 const hostname = os.hostname();
                 const localIP = this.getLocalIP();
+                const tailscaleIP = this.getTailscaleIP();
 
                 this.service = this.bonjour.publish({
                     name: `${this.serviceName}-${hostname}`,
@@ -70,11 +91,15 @@ class DiscoveryService {
 
                 this.service.on('up', () => {
                     console.log(`[Discovery] Service advertised: ${this.serviceName} at ${localIP}:${this.port}`);
+                    if (tailscaleIP) {
+                        console.log(`[Discovery] Tailscale detected: ${tailscaleIP.address} (${tailscaleIP.name})`);
+                    }
                     resolve({
                         ip: localIP,
                         port: this.port,
                         hostname: hostname,
-                        allIPs: this.getAllLocalIPs()
+                        allIPs: this.getAllLocalIPs(),
+                        tailscaleIP: tailscaleIP ? tailscaleIP.address : null
                     });
                 });
 

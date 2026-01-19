@@ -160,6 +160,14 @@
                         <input type="text" id="pinInput" placeholder="6-digit PIN" maxlength="6" pattern="[0-9]*"
                             inputmode="numeric">
                     </div>
+                    <div class="settings-field">
+                        <label for="splashDurationInput">Splash Screen Duration</label>
+                        <div class="slider-container">
+                            <input type="range" id="splashDurationInput" min="0" max="10000" step="500" value="2500">
+                            <span id="splashDurationValue">2.5s</span>
+                        </div>
+                        <small>Duration: 0 to 10 seconds</small>
+                    </div>
                     <div class="settings-actions">
                         <button id="saveSettingsBtn" class="save-btn">Save & Connect</button>
                     </div>
