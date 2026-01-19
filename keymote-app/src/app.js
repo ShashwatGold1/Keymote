@@ -191,112 +191,62 @@ class RemoteInputApp {
         }
     }
 
-    // Hybrid QR Scanner - using native plugin for permission, then browser for logic
+    // Reliable QR Scanner - "Take a Picture" approach
+    // This avoids all complex WebView permission issues by using the native Camera app
     async startNativeQrScanner() {
-        console.log('Starting Hybrid QR Scanner...');
+        console.log('Starting Snapshot QR Scanner...');
 
         try {
-            // 1. Force permission check using Capacitor Camera plugin (very reliable)
-            const { Camera } = window.Capacitor?.Plugins || {};
-            if (Camera) {
-                try {
-                    const status = await Camera.checkPermissions();
-                    if (status.camera !== 'granted') {
-                        await Camera.requestPermissions();
-                    }
-                } catch (e) {
-                    console.log('Camera plugin error (non-fatal):', e);
-                }
-            }
+            const { Camera } = window.Capacitor.Plugins;
 
-            // 2. Now that we've requested permission natively, try getUserMedia
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'environment' }
+            // Open the native camera to take a picture
+            const image = await Camera.getPhoto({
+                quality: 100,
+                allowEditing: false,
+                resultType: 'base64',
+                source: 'CAMERA',
+                width: 1000 // Resize to reasonable width for faster scanning
             });
 
-            // If we got here, camera is authorized and working
-            this.showCameraScannerOverlay(stream);
+            // Once the user snaps a photo, process it
+            this.processQrImage(image.base64String);
+
         } catch (error) {
-            console.error('Hybrid scanner failure:', error);
-            // Show more detailed error for diagnosis
-            const errorMsg = error.name + ': ' + error.message;
-            alert('Camera Error: ' + errorMsg + '\n\nTry manual input instead.');
-            this.showManualQrInput();
+            console.error('Snapshot scanner failed:', error);
+            // Only show manual input if it wasn't just a user cancellation
+            if (!error.message || !error.message.includes('User cancelled')) {
+                this.showManualQrInput();
+            }
         }
     }
 
-    showCameraScannerOverlay(stream) {
-        // Remove any existing overlay
-        const oldOverlay = document.getElementById('qrScannerOverlay');
-        if (oldOverlay) oldOverlay.remove();
-
-        // Create scanner overlay
-        const overlay = document.createElement('div');
-        overlay.id = 'qrScannerOverlay';
-        overlay.className = 'qr-scanner-overlay';
-        overlay.innerHTML = `
-            <div class="scanner-header">
-                <button id="closeScannerBtn" class="close-scanner-btn">✕</button>
-                <span>Scan QR Code</span>
-            </div>
-            <div class="scanner-viewport">
-                <video id="qrVideo" autoplay playsinline></video>
-                <canvas id="qrCanvas" style="display:none;"></canvas>
-                <div class="scanner-frame"></div>
-            </div>
-            <p class="scanner-hint">Point camera at the QR code on your PC</p>
-        `;
-        overlay.style.display = 'flex';
-        document.body.appendChild(overlay);
-
-        const video = overlay.querySelector('#qrVideo');
-        const canvas = overlay.querySelector('#qrCanvas');
-        const closeBtn = overlay.querySelector('#closeScannerBtn');
-
-        video.srcObject = stream;
-        this.qrStream = stream;
-        this.qrScanning = true;
-
-        closeBtn.onclick = () => this.stopQrScanner();
-
-        video.onloadedmetadata = () => {
-            video.play();
-            this.scanQrLoop(video, canvas);
-        };
-    }
-
-    stopQrScanner() {
-        this.qrScanning = false;
-        if (this.qrStream) {
-            this.qrStream.getTracks().forEach(t => t.stop());
-            this.qrStream = null;
-        }
-        const overlay = document.getElementById('qrScannerOverlay');
-        if (overlay) overlay.remove();
-    }
-
-    scanQrLoop(video, canvas) {
-        if (!this.qrScanning) return;
-
-        if (video.readyState === video.HAVE_ENOUGH_DATA && typeof jsQR !== 'undefined') {
+    processQrImage(base64) {
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            ctx.drawImage(video, 0, 0);
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
 
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const code = jsQR(imageData.data, imageData.width, imageData.height);
 
             if (code) {
-                console.log('QR detected:', code.data);
-                this.stopQrScanner();
                 this.handleQrData(code.data);
-                return;
+            } else {
+                alert('Could not find a QR code in that picture.\n\nPlease try again and ensure the QR code is clearly visible, or enter the details manually.');
+                this.showManualQrInput();
             }
-        }
-
-        requestAnimationFrame(() => this.scanQrLoop(video, canvas));
+        };
+        img.onerror = () => {
+            alert('Failed to process image.');
+            this.showManualQrInput();
+        };
+        img.src = 'data:image/jpeg;base64,' + base64;
     }
+
+    // Removed unused video overlay methods to keep code clean
 
     showManualQrInput() {
         // If native scanner fails, show a prompt for manual QR data entry
