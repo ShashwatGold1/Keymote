@@ -204,8 +204,8 @@ class RemoteInputApp {
                 quality: 100,
                 allowEditing: false,
                 resultType: 'base64',
-                source: 'CAMERA',
-                width: 1000 // Resize to reasonable width for faster scanning
+                source: 'CAMERA'
+                // Removed width limit to get maximum detail
             });
 
             // Once the user snaps a photo, process it
@@ -215,6 +215,8 @@ class RemoteInputApp {
             console.error('Snapshot scanner failed:', error);
             // Only show manual input if it wasn't just a user cancellation
             if (!error.message || !error.message.includes('User cancelled')) {
+                // Check if it's "Camera not available" (e.g. no camera or permission hard denied)
+                alert('Scanner Error: ' + (error.message || 'Unknown error'));
                 this.showManualQrInput();
             }
         }
@@ -223,19 +225,25 @@ class RemoteInputApp {
     processQrImage(base64) {
         const img = new Image();
         img.onload = () => {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            canvas.width = img.width;
-            canvas.height = img.height;
-            ctx.drawImage(img, 0, 0);
+            // Attempt 1: Full Resolution
+            let code = this.scanImageOnCanvas(img, 1.0);
 
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const code = jsQR(imageData.data, imageData.width, imageData.height);
+            // Attempt 2: Downscale to 50% (helps if image is too huge/noisy)
+            if (!code) {
+                console.log('Pass 1 failed, trying downscale...');
+                code = this.scanImageOnCanvas(img, 0.5);
+            }
+
+            // Attempt 3: Downscale to 25%
+            if (!code) {
+                console.log('Pass 2 failed, trying further downscale...');
+                code = this.scanImageOnCanvas(img, 0.25);
+            }
 
             if (code) {
                 this.handleQrData(code.data);
             } else {
-                alert('Could not find a QR code in that picture.\n\nPlease try again and ensure the QR code is clearly visible, or enter the details manually.');
+                alert('Could not detect QR code.\n\nTips:\n- Ensure good lighting\n- Hold camera steady\n- Make sure QR code is centered\n\nOr enter details manually.');
                 this.showManualQrInput();
             }
         };
@@ -244,6 +252,19 @@ class RemoteInputApp {
             this.showManualQrInput();
         };
         img.src = 'data:image/jpeg;base64,' + base64;
+    }
+
+    scanImageOnCanvas(img, scale) {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        return jsQR(imageData.data, imageData.width, imageData.height);
     }
 
     // Removed unused video overlay methods to keep code clean
