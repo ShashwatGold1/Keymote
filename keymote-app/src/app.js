@@ -214,13 +214,27 @@ class RemoteInputApp {
                 return;
             }
 
-            // This single call handles everything: UI, permission (if needed), and scanning.
-            const result = await scanner.scanBarcode({
-                hint: 0 // HINT_QR_CODE
+            // DEBUG: Check available methods on the scanner object
+            // This will help us confirm if 'scan' exists
+            if (!scanner.scan) {
+                const methods = Object.keys(scanner);
+                const protoMethods = Object.keys(Object.getPrototypeOf(scanner));
+                alert('Scanner API Error: .scan() missing.\nMethods: ' + JSON.stringify(methods.concat(protoMethods)));
+            }
+
+            // The correct method for v6 is .scan()
+            const result = await scanner.scan({
+                formats: [], // Empty array = all formats
+                lensFacing: 1 // Back camera
             });
 
-            if (result && result.ScanResult) {
-                this.handleQrData(result.ScanResult);
+            if (result && result.barcodes && result.barcodes.length > 0) {
+                // v6 returns { barcodes: [{ displayValue: '...' }] }
+                this.handleQrData(result.barcodes[0].displayValue);
+            } else if (result && result.barcodes) {
+                // Cancelled or no code
+            } else {
+                console.log("Unexpected result format:", result);
             }
         } catch (error) {
             console.error('ML Kit Scanner failed:', error);
