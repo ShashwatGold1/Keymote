@@ -71,15 +71,27 @@
 
             <!-- QR Scanner Primary Action -->
             <div class="qr-scan-section">
-                <button id="scanQrBtn" class="qr-scan-btn">
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path
-                            d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
-                        <rect x="7" y="7" width="10" height="10" rx="1" />
-                    </svg>
-                    <span>Scan QR Code</span>
-                </button>
-                <p class="qr-hint">Scan the QR code shown on your PC</p>
+                <div class="qr-buttons">
+                    <button id="scanQrBtn" class="qr-scan-btn">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path
+                                d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+                            <rect x="7" y="7" width="10" height="10" rx="1" />
+                        </svg>
+                        <span>Scan QR</span>
+                    </button>
+                    <button id="scanGalleryBtn" class="qr-scan-btn secondary">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                            <circle cx="8.5" cy="8.5" r="1.5" />
+                            <polyline points="21 15 16 10 5 21" />
+                        </svg>
+                        <span>Gallery</span>
+                    </button>
+                </div>
+                <p class="qr-hint">Scan from Camera or Gallery</p>
             </div>
 
             <!-- Saved Connections -->

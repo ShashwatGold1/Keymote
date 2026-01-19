@@ -155,6 +155,14 @@ class RemoteInputApp {
             });
         }
 
+        // Gallery QR button
+        const galleryBtn = document.getElementById('scanGalleryBtn');
+        if (galleryBtn) {
+            galleryBtn.addEventListener('click', async () => {
+                await this.pickQrFromGallery();
+            });
+        }
+
         // Toggle for manual connection form
         if (this.loginEl.newConnectionToggle) {
             this.loginEl.newConnectionToggle.onclick = () => {
@@ -242,6 +250,54 @@ class RemoteInputApp {
             if (!error.message || !error.message.includes('Canceled')) {
                 alert('Scanner Error: ' + (error.message || 'Unknown error'));
                 this.showManualQrInput();
+            }
+        }
+    }
+
+    async pickQrFromGallery() {
+        console.log('Picking QR from gallery...');
+        try {
+            const { Camera, CameraSource } = window.Capacitor.Plugins;
+            // Correct name for @capacitor-mlkit/barcode-scanning is 'MlkitBarcodescanner'
+            // We'll try that and fallback to others just in case
+            const { MlkitBarcodescanner, CapacitorBarcodeScanner, BarcodeScanner } = window.Capacitor.Plugins;
+
+            const scanner = MlkitBarcodescanner || CapacitorBarcodeScanner || BarcodeScanner;
+
+            if (!scanner) {
+                alert('Plugin Error: Scanner plugin missing.');
+                return;
+            }
+
+            // 1. Pick Image
+            const image = await Camera.getPhoto({
+                quality: 100,
+                allowEditing: false,
+                resultType: 'path', // MLKit needs a path
+                source: 'PHOTOS'   // Open Gallery
+            });
+
+            if (!image || !image.path) {
+                return; // User cancelled
+            }
+
+            // 2. Scan Image
+            const result = await scanner.readBarcodesFromImage({
+                path: image.path,
+                formats: []
+            });
+
+            // 3. Handle Result
+            if (result && result.barcodes && result.barcodes.length > 0) {
+                this.handleQrData(result.barcodes[0].displayValue);
+            } else {
+                alert('No QR code found in this image.');
+            }
+
+        } catch (error) {
+            console.error('Gallery scan failed:', error);
+            if (!error && error.message !== 'User cancelled photos app') {
+                alert('Gallery Error: ' + (error.message || JSON.stringify(error)));
             }
         }
     }
