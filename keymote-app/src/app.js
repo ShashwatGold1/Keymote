@@ -191,81 +191,33 @@ class RemoteInputApp {
         }
     }
 
-    // Reliable QR Scanner - "Take a Picture" approach
-    // This avoids all complex WebView permission issues by using the native Camera app
+    // Native Google Code Scanner (ML Kit)
+    // This provides a full native UI and handles permissions automatically via Google Play Services.
     async startNativeQrScanner() {
-        console.log('Starting Snapshot QR Scanner...');
+        console.log('Starting Google ML Kit Scanner...');
 
         try {
-            const { Camera } = window.Capacitor.Plugins;
+            const { CapacitorBarcodeScanner } = window.Capacitor.Plugins;
 
-            // Open the native camera to take a picture
-            const image = await Camera.getPhoto({
-                quality: 100,
-                allowEditing: false,
-                resultType: 'base64',
-                source: 'CAMERA'
-                // Removed width limit to get maximum detail
+            // This single call handles everything: UI, permission (if needed), and scanning.
+            const result = await CapacitorBarcodeScanner.scanBarcode({
+                hint: 0 // HINT_QR_CODE
             });
 
-            // Once the user snaps a photo, process it
-            this.processQrImage(image.base64String);
-
+            if (result && result.ScanResult) {
+                this.handleQrData(result.ScanResult);
+            }
         } catch (error) {
-            console.error('Snapshot scanner failed:', error);
-            // Only show manual input if it wasn't just a user cancellation
-            if (!error.message || !error.message.includes('User cancelled')) {
-                // Check if it's "Camera not available" (e.g. no camera or permission hard denied)
+            console.error('ML Kit Scanner failed:', error);
+            // If the user cancelled, do nothing. Otherwise show error.
+            if (!error.message || !error.message.includes('Canceled')) {
                 alert('Scanner Error: ' + (error.message || 'Unknown error'));
                 this.showManualQrInput();
             }
         }
     }
 
-    processQrImage(base64) {
-        const img = new Image();
-        img.onload = () => {
-            // Attempt 1: Full Resolution
-            let code = this.scanImageOnCanvas(img, 1.0);
-
-            // Attempt 2: Downscale to 50% (helps if image is too huge/noisy)
-            if (!code) {
-                console.log('Pass 1 failed, trying downscale...');
-                code = this.scanImageOnCanvas(img, 0.5);
-            }
-
-            // Attempt 3: Downscale to 25%
-            if (!code) {
-                console.log('Pass 2 failed, trying further downscale...');
-                code = this.scanImageOnCanvas(img, 0.25);
-            }
-
-            if (code) {
-                this.handleQrData(code.data);
-            } else {
-                alert('Could not detect QR code.\n\nTips:\n- Ensure good lighting\n- Hold camera steady\n- Make sure QR code is centered\n\nOr enter details manually.');
-                this.showManualQrInput();
-            }
-        };
-        img.onerror = () => {
-            alert('Failed to process image.');
-            this.showManualQrInput();
-        };
-        img.src = 'data:image/jpeg;base64,' + base64;
-    }
-
-    scanImageOnCanvas(img, scale) {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-
-        canvas.width = img.width * scale;
-        canvas.height = img.height * scale;
-
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        return jsQR(imageData.data, imageData.width, imageData.height);
-    }
+    // Removed legacy processQrImage / scanImageOnCanvas methods as we are using native UI now
 
     // Removed unused video overlay methods to keep code clean
 
