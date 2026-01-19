@@ -197,10 +197,25 @@ class RemoteInputApp {
         console.log('Starting Google ML Kit Scanner...');
 
         try {
-            const { CapacitorBarcodeScanner } = window.Capacitor.Plugins;
+            // DEBUG: Check what plugins are actually available
+            const pluginKeys = Object.keys(window.Capacitor.Plugins || {});
+            console.log('Available Plugins:', pluginKeys);
+
+            // Correct name for @capacitor-mlkit/barcode-scanning is 'MlkitBarcodescanner'
+            // We'll try that and fallback to others just in case
+            const { MlkitBarcodescanner, CapacitorBarcodeScanner, BarcodeScanner } = window.Capacitor.Plugins;
+
+            const scanner = MlkitBarcodescanner || CapacitorBarcodeScanner || BarcodeScanner;
+
+            if (!scanner) {
+                const pluginKeys = Object.keys(window.Capacitor.Plugins || {});
+                alert('Plugin Error: Scanner plugin missing.\nAvailable: ' + JSON.stringify(pluginKeys));
+                this.showManualQrInput();
+                return;
+            }
 
             // This single call handles everything: UI, permission (if needed), and scanning.
-            const result = await CapacitorBarcodeScanner.scanBarcode({
+            const result = await scanner.scanBarcode({
                 hint: 0 // HINT_QR_CODE
             });
 
