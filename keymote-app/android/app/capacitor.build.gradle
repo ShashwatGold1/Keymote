@@ -12,6 +12,7 @@ dependencies {
     implementation project(':capacitor-community-speech-recognition')
     implementation project(':capacitor-mlkit-barcode-scanning')
     implementation project(':capacitor-camera')
+    implementation project(':capacitor-filesystem')
 
 }
 

@@ -79,7 +79,7 @@
                                 d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
                             <rect x="7" y="7" width="10" height="10" rx="1" />
                         </svg>
-                        <span>Scan QR</span>
+                        <span>Camera</span>
                     </button>
                     <button id="scanGalleryBtn" class="qr-scan-btn secondary">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -90,25 +90,42 @@
                         </svg>
                         <span>Gallery</span>
                     </button>
+                    <button id="manualEntryBtn" class="qr-scan-btn secondary">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                        </svg>
+                        <span>Manual</span>
+                    </button>
                 </div>
-                <p class="qr-hint">Scan from Camera or Gallery</p>
+                <p class="qr-hint">Scan QR code or enter connection details manually</p>
             </div>
 
-            <!-- Saved Connections -->
-            <div class="saved-connections" id="savedConnections" style="display: none;">
-                <h3 class="saved-title">Saved Devices</h3>
-                <div class="saved-list" id="savedList">
-                    <!-- Populated by JS -->
+            <!-- Saved Devices List -->
+            <div class="saved-connections" id="savedConnections">
+                <div class="saved-title">Saved Devices</div>
+                <div id="savedDevicesList" class="saved-list">
+                    <!-- Saved devices will be inserted here -->
                 </div>
             </div>
+        </div>
+    </div>
 
-            <!-- Manual Connection Toggle -->
-            <button class="new-connection-toggle" id="newConnectionToggle">
-                <span>+ Manual Connection</span>
+    <!-- Manual Connection Page (Full Screen) -->
+    <div id="manualConnectionModal" class="manual-modal" style="display: none;">
+        <div class="manual-header">
+            <button id="closeManualBtn" class="back-btn">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M15 18l-6-6 6-6" />
+                </svg>
             </button>
+            <span class="manual-title">Manual Connection</span>
+        </div>
 
-            <!-- Login Form (collapsible) -->
-            <div class="login-form" id="loginForm" style="display: none;">
+        <div class="manual-content">
+            <div class="login-form full-page">
                 <div class="login-field">
                     <label for="loginServerAddress">Server Address</label>
                     <input type="text" id="loginServerAddress" placeholder="e.g., 192.168.1.100:8765">
@@ -122,17 +139,17 @@
                     <input type="text" id="loginPin" placeholder="6-digit PIN" maxlength="6" pattern="[0-9]*"
                         inputmode="numeric">
                 </div>
-                <div class="login-field checkbox-field">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="rememberMe" checked>
-                        <span class="checkmark"></span>
-                        <span>Remember this device</span>
-                    </label>
-                </div>
+
+                <label class="login-checkbox">
+                    <input type="checkbox" id="rememberMe" checked>
+                    <span>Remember this device</span>
+                </label>
+
                 <button id="loginConnectBtn" class="login-btn">
                     <span class="btn-text">Connect</span>
                     <span class="btn-loader" style="display: none;"></span>
                 </button>
+
                 <div id="loginStatus" class="login-status"></div>
             </div>
         </div>
@@ -456,6 +473,88 @@
             </div>
         </div>
     </div>
+
+    <!-- Debug Modal -->
+    <div id="debugModal" class="debug-modal" style="display: none;">
+        <div class="debug-modal-content">
+            <h3 id="debugModalTitle">Debug</h3>
+            <pre id="debugModalMessage"></pre>
+            <div class="debug-modal-buttons">
+                <button id="debugCopyBtn" class="debug-copy-btn">📋 Copy</button>
+                <button id="debugCloseBtn" class="debug-close-btn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        .debug-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            padding: 20px;
+        }
+
+        .debug-modal-content {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 20px;
+            max-width: 90%;
+            max-height: 80%;
+            overflow: auto;
+        }
+
+        .debug-modal-content h3 {
+            color: #fff;
+            margin: 0 0 15px 0;
+        }
+
+        .debug-modal-content pre {
+            background: #0d0d15;
+            color: #4ade80;
+            padding: 15px;
+            border-radius: 8px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            font-size: 12px;
+            max-height: 300px;
+            overflow: auto;
+        }
+
+        .debug-modal-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .debug-copy-btn {
+            flex: 1;
+            padding: 12px;
+            background: #6366f1;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        .debug-close-btn {
+            flex: 1;
+            padding: 12px;
+            background: #333;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+    </style>
 
     <script src="jsQR.js"></script>
     <script src="app.js"></script>

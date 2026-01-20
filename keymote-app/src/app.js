@@ -32,9 +32,10 @@ class RemoteInputApp {
             connectBtn: document.getElementById('loginConnectBtn'),
             status: document.getElementById('loginStatus'),
             savedConnections: document.getElementById('savedConnections'),
-            savedList: document.getElementById('savedList'),
-            newConnectionToggle: document.getElementById('newConnectionToggle'),
+            savedList: document.getElementById('savedDevicesList'),
+            // newConnectionToggle removed
             loginForm: document.getElementById('loginForm'),
+            // screen: document.getElementById('loginScreen'), // (Already in this.screens.login?) -- wait, let's keep it simple
             rememberMe: document.getElementById('rememberMe')
         };
 
@@ -128,6 +129,10 @@ class RemoteInputApp {
         if (this.screens.main) this.screens.main.style.display = 'none';
         if (this.screens.settings) this.screens.settings.style.display = 'none';
 
+        // Explicitly hide overlays
+        const manualModal = document.getElementById('manualConnectionModal');
+        if (manualModal) manualModal.style.display = 'none';
+
         // Show requested screen
         if (screen === 'blocked' && this.screens.blocked) {
             this.screens.blocked.style.display = 'flex';
@@ -160,6 +165,26 @@ class RemoteInputApp {
         if (galleryBtn) {
             galleryBtn.addEventListener('click', async () => {
                 await this.pickQrFromGallery();
+            });
+        }
+
+        // Manual Entry button - shows the manual connection modal
+        const manualBtn = document.getElementById('manualEntryBtn');
+        const closeManualBtn = document.getElementById('closeManualBtn');
+        const manualModal = document.getElementById('manualConnectionModal');
+
+        if (manualBtn && manualModal) {
+            manualBtn.addEventListener('click', () => {
+                manualModal.style.display = 'flex';
+                // Focus on input
+                const addrInput = document.getElementById('loginServerAddress');
+                if (addrInput) addrInput.focus();
+            });
+        }
+
+        if (closeManualBtn && manualModal) {
+            closeManualBtn.addEventListener('click', () => {
+                manualModal.style.display = 'none';
             });
         }
 
@@ -254,57 +279,166 @@ class RemoteInputApp {
         }
     }
 
+    // Gallery QR Scanning using custom native plugin (fully native ML Kit)
     async pickQrFromGallery() {
-        console.log('Picking QR from gallery...');
+        console.log('Picking QR from gallery (native plugin)...');
         try {
-            const { Camera, CameraSource } = window.Capacitor.Plugins;
-            // Correct name for @capacitor-mlkit/barcode-scanning is 'MlkitBarcodescanner'
-            // We'll try that and fallback to others just in case
-            const { MlkitBarcodescanner, CapacitorBarcodeScanner, BarcodeScanner } = window.Capacitor.Plugins;
+            // DEBUG: List all available plugins
+            const pluginKeys = Object.keys(window.Capacitor.Plugins || {});
+            console.log('Available plugins:', pluginKeys);
 
-            const scanner = MlkitBarcodescanner || CapacitorBarcodeScanner || BarcodeScanner;
+            // Use our custom native GalleryQrScanner plugin
+            const { GalleryQrScanner } = window.Capacitor.Plugins;
 
-            if (!scanner) {
-                alert('Plugin Error: Scanner plugin missing.');
+            if (!GalleryQrScanner) {
+                const debugMsg = 'GalleryQrScanner NOT found!\n\nAvailable plugins:\n' + pluginKeys.join('\n');
+                await this.showDebugWithCopy('Plugin Error', debugMsg);
                 return;
             }
 
-            // 1. Pick Image
-            const image = await Camera.getPhoto({
-                quality: 100,
-                allowEditing: false,
-                resultType: 'path', // MLKit needs a path
-                source: 'PHOTOS'   // Open Gallery
-            });
+            // Call native plugin - it handles image picking + ML Kit scanning
+            const result = await GalleryQrScanner.scanFromGallery();
+            console.log('Native gallery scan result:', result);
 
-            if (!image || !image.path) {
-                return; // User cancelled
+            // Show debug with copy option
+            // const debugJson = JSON.stringify(result, null, 2);
+            // await this.showDebugWithCopy('Gallery Scan Result', debugJson);
+
+            if (result.cancelled) {
+                return;
             }
 
-            // 2. Scan Image
-            const result = await scanner.readBarcodesFromImage({
-                path: image.path,
-                formats: []
-            });
-
-            // 3. Handle Result
-            if (result && result.barcodes && result.barcodes.length > 0) {
-                this.handleQrData(result.barcodes[0].displayValue);
+            if (result.found && result.data) {
+                console.log('QR found (Native):', result.data);
+                this.handleQrData(result.data);
             } else {
-                alert('No QR code found in this image.');
+                // Native scan reported failure (e.g. "Strategies 1-4 failed")
+                // Try fallback JS scanner if native found nothing
+                console.log('Native scan empty, trying JS fallback...');
+                this.fallbackScanWithJsQR();
             }
 
         } catch (error) {
-            console.error('Gallery scan failed:', error);
-            if (!error && error.message !== 'User cancelled photos app') {
-                alert('Gallery Error: ' + (error.message || JSON.stringify(error)));
-            }
+            console.error('Gallery native scan error:', error);
+            // Native plugin crashed or file load failed -> Fallback to JS
+            console.log('Native plugin failed, triggering JS fallback...');
+            this.fallbackScanWithJsQR();
         }
     }
 
-    // Removed legacy processQrImage / scanImageOnCanvas methods as we are using native UI now
+    // Fallback: Pure JS scanning using file input and jsQR
+    // This works on any device but requires manual file selection again
+    fallbackScanWithJsQR() {
+        // Create hidden input if not exists
+        let input = document.getElementById('hiddenQrInput');
+        if (!input) {
+            input = document.createElement('input');
+            input.id = 'hiddenQrInput';
+            input.type = 'file';
+            input.accept = 'image/*';
+            input.style.display = 'none';
+            document.body.appendChild(input);
 
-    // Removed unused video overlay methods to keep code clean
+            input.addEventListener('change', async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                console.log('Scanning file with JS:', file.name);
+
+                try {
+                    // Create image URL
+                    const imageUrl = URL.createObjectURL(file);
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0);
+
+                        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                        const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+                        URL.revokeObjectURL(imageUrl); // Cleanup
+
+                        if (code) {
+                            console.log('QR found (JS Fallback):', code.data);
+                            this.handleQrData(code.data);
+                        } else {
+                            alert('No QR code found (JS Fallback).\n\nPlease try a clearer image.');
+                        }
+                    };
+                    img.onerror = () => {
+                        alert('Failed to load image for JS scanning.');
+                    };
+                    img.src = imageUrl;
+                } catch (err) {
+                    console.error('JS scan error:', err);
+                    alert('Error scanning image (JS): ' + err.message);
+                }
+
+                // Clear value so same file can be selected again
+                input.value = '';
+            });
+        }
+
+        // Trigger click
+        input.click();
+    }
+
+    // Helper to show debug message with copy-to-clipboard button
+    showDebugWithCopy(title, message) {
+        return new Promise((resolve) => {
+            const modal = document.getElementById('debugModal');
+            const titleEl = document.getElementById('debugModalTitle');
+            const msgEl = document.getElementById('debugModalMessage');
+            const copyBtn = document.getElementById('debugCopyBtn');
+            const closeBtn = document.getElementById('debugCloseBtn');
+
+            if (!modal) {
+                alert(`DEBUG: ${title}\n\n${message}`);
+                resolve();
+                return;
+            }
+
+            titleEl.textContent = title;
+            msgEl.textContent = message;
+            modal.style.display = 'flex';
+
+            // Copy button handler
+            const handleCopy = async () => {
+                try {
+                    await navigator.clipboard.writeText(message);
+                    copyBtn.textContent = '✓ Copied!';
+                    copyBtn.style.background = '#22c55e';
+                    setTimeout(() => {
+                        copyBtn.textContent = '📋 Copy';
+                        copyBtn.style.background = '#6366f1';
+                    }, 2000);
+                } catch (e) {
+                    // Fallback: select text
+                    msgEl.focus();
+                    const range = document.createRange();
+                    range.selectNodeContents(msgEl);
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    copyBtn.textContent = 'Select All (copy manually)';
+                }
+            };
+
+            // Close button handler
+            const handleClose = () => {
+                modal.style.display = 'none';
+                copyBtn.removeEventListener('click', handleCopy);
+                closeBtn.removeEventListener('click', handleClose);
+                resolve();
+            };
+
+            copyBtn.addEventListener('click', handleCopy);
+            closeBtn.addEventListener('click', handleClose);
+        });
+    }
 
     showManualQrInput() {
         // If native scanner fails, show a prompt for manual QR data entry
@@ -408,15 +542,15 @@ class RemoteInputApp {
             this.loginEl.savedList.innerHTML = savedKeys.map(key => {
                 const device = this.savedDevices[key];
                 return `
-    < div class="saved-device" data - key="${key}" >
+                    <div class="saved-device" data-key="${key}">
                         <span class="saved-device-icon">🖥️</span>
                         <div class="saved-device-info">
                             <div class="saved-device-name">${device.computerName || 'Unknown PC'}</div>
                             <div class="saved-device-address">${device.serverAddress || 'Local Network'}</div>
                         </div>
                         <button class="saved-device-delete" data-key="${key}">×</button>
-                    </div >
-    `;
+                    </div>
+                `;
             }).join('');
 
             // Add click handlers
