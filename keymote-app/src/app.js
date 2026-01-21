@@ -470,7 +470,7 @@ class RemoteInputApp {
             // If PIN is present, use P2P mode directly (for internet connections)
             if (this.pendingPin) {
                 console.log('QR has PIN, using P2P mode...');
-                // Overlay already shown in startNativeQrScanner
+                this.showProcessingOverlay('Processing...');
                 this.updateLoginStatus('Connecting via P2P...', 'connecting');
                 this.connectP2P(this.pendingPin);
                 return;
@@ -551,6 +551,7 @@ class RemoteInputApp {
                     this.customServer = device.serverAddress;
                     this.computerName = device.computerName;
                     this.authToken = device.token;
+                    this.showProcessingOverlay('Connecting...');
                     this.connect();
                 }
             });
@@ -565,7 +566,18 @@ class RemoteInputApp {
         });
     }
 
+    // Processing Overlay helpers
+    showProcessingOverlay(text = 'Processing...') {
+        const overlay = document.getElementById('processingOverlay');
+        const textEl = document.getElementById('processingText');
+        if (overlay) overlay.style.display = 'flex';
+        if (textEl) textEl.textContent = text;
+    }
 
+    hideProcessingOverlay() {
+        const overlay = document.getElementById('processingOverlay');
+        if (overlay) overlay.style.display = 'none';
+    }
 
     saveDevice(serverAddress, computerName, token) {
         const key = serverAddress || 'local';

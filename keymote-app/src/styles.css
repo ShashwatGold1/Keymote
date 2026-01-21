@@ -59,6 +59,46 @@
     transform: translate(-50%, -50%);
 }
 
+/* Processing Overlay - shown during QR scan/connection */
+.processing-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(13, 13, 15, 0.95);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+}
+
+.processing-content {
+    text-align: center;
+    color: var(--text);
+}
+
+.processing-spinner {
+    width: 48px;
+    height: 48px;
+    border: 4px solid var(--bg3);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    margin: 0 auto 16px;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.processing-content p {
+    font-size: 16px;
+    color: var(--text2);
+    margin: 0;
+}
 
 html,
 body {

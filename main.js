@@ -338,7 +338,7 @@ ipcMain.on('remote-input', (event, data) => {
     }
 
     // If it's keyboard object
-    if (data.type === 'keydown' || data.type === 'keyup' || data.type === 'text') {
+    if (data.type === 'keydown' || data.type === 'keyup' || data.type === 'text' || data.type === 'key' || data.type === 'shortcut') {
         if (keyboardInjector) keyboardInjector.handleKeyEvent(data);
         return;
     }
