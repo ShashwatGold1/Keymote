@@ -118,6 +118,8 @@ class RemoteInputApp {
             // Pre-populate login fields with saved values
             if (this.loginEl.serverAddress) this.loginEl.serverAddress.value = this.customServer;
             if (this.loginEl.computerName) this.loginEl.computerName.value = this.computerName;
+            // Render saved devices list
+            this.renderSavedDevices();
         }, splashDuration);
     }
 
@@ -465,7 +467,16 @@ class RemoteInputApp {
             localStorage.setItem('customServer', this.customServer);
             localStorage.setItem('computerName', this.computerName);
 
-            // Connect immediately
+            // If PIN is present, use P2P mode directly (for internet connections)
+            if (this.pendingPin) {
+                console.log('QR has PIN, using P2P mode...');
+                // Overlay already shown in startNativeQrScanner
+                this.updateLoginStatus('Connecting via P2P...', 'connecting');
+                this.connectP2P(this.pendingPin);
+                return;
+            }
+
+            // Fallback to regular connect (WebSocket for local network)
             this.updateLoginStatus('Connecting via QR...', 'connecting');
             this.connect();
         } catch (error) {
@@ -504,6 +515,57 @@ class RemoteInputApp {
     saveSavedDevices() {
         localStorage.setItem('savedDevices', JSON.stringify(this.savedDevices));
     }
+
+    // Render saved devices to the login screen list
+    renderSavedDevices() {
+        const list = this.loginEl.savedList;
+        const container = this.loginEl.savedConnections;
+        if (!list) return;
+
+        const devices = Object.entries(this.savedDevices);
+
+        if (devices.length === 0) {
+            if (container) container.style.display = 'none';
+            return;
+        }
+
+        if (container) container.style.display = 'block';
+
+        list.innerHTML = devices.map(([key, device]) => `
+            <div class="saved-device-item" data-key="${key}">
+                <div class="saved-device-info">
+                    <span class="saved-device-name">${device.computerName || 'Unknown Device'}</span>
+                    <span class="saved-device-address">${device.serverAddress || 'Local'}</span>
+                </div>
+                <button class="saved-device-connect" data-key="${key}">Connect</button>
+                <button class="saved-device-delete" data-key="${key}">✕</button>
+            </div>
+        `).join('');
+
+        // Add click handlers
+        list.querySelectorAll('.saved-device-connect').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const key = e.target.dataset.key;
+                const device = this.savedDevices[key];
+                if (device) {
+                    this.customServer = device.serverAddress;
+                    this.computerName = device.computerName;
+                    this.authToken = device.token;
+                    this.connect();
+                }
+            });
+        });
+
+        list.querySelectorAll('.saved-device-delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const key = e.target.dataset.key;
+                this.removeDevice(key);
+                this.renderSavedDevices();
+            });
+        });
+    }
+
+
 
     saveDevice(serverAddress, computerName, token) {
         const key = serverAddress || 'local';
@@ -924,10 +986,20 @@ class RemoteInputApp {
     }
 
     connect() {
-        if (this.ws?.readyState === WebSocket.OPEN) return;
+        // Disconnect if already connected
+        this.disconnect();
 
-        // Use custom server if set, otherwise auto-detect from current page
-        let url;
+        // Check for Internet Mode (P2P)
+        const internetMode = document.getElementById('internetMode');
+        if (internetMode && internetMode.checked) {
+            console.log('Connecting via Internet (P2P)...');
+            this.pendingPin = this.loginEl.pin.value;
+            this.connectP2P(this.pendingPin);
+            return;
+        }
+
+        // Determine server URL
+        let url = '';
         if (this.customServer) {
             let server = this.customServer.trim();
             // Convert HTTP/HTTPS URLs to WebSocket protocols
@@ -944,6 +1016,10 @@ class RemoteInputApp {
             url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
         }
 
+        this.websocketConnect(url);
+    }
+
+    websocketConnect(url) {
         this.updateStatus('connecting', 'Connecting...');
         this.isAuthenticated = false;
 
@@ -953,17 +1029,114 @@ class RemoteInputApp {
                 this.isConnected = true;
                 this.reconnectAttempts = 0;
                 this.updateStatus('connected', 'Auth...');
+                this.p2pConn = null; // Clear P2P if WS connects
             };
             this.ws.onclose = () => {
                 this.isConnected = false;
                 this.isAuthenticated = false;
                 this.stopPing();
                 this.updateStatus('error', 'Disconnected');
-                this.scheduleReconnect();
+                // Only schedule reconnect if not intentionally P2P
+                if (!this.p2pConn) this.scheduleReconnect();
             };
             this.ws.onerror = () => this.updateStatus('error', 'Error');
             this.ws.onmessage = e => this.handleMessage(e.data);
         } catch { this.updateStatus('error', 'Failed'); this.scheduleReconnect(); }
+    }
+
+    // P2P Connection Logic
+    connectP2P(pin) {
+        if (!pin) {
+            this.updateLoginStatus('PIN required for Internet Mode', 'error');
+            return;
+        }
+
+        this.updateLoginStatus('Initializing P2P...', 'connecting');
+
+        // Initialize Peer
+        if (this.peer) this.peer.destroy();
+        this.peer = new Peer({
+            debug: 1,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:global.stun.twilio.com:3478' }
+                ]
+            }
+        });
+
+        this.peer.on('call', (call) => {
+            console.log('[P2P] Incoming Video Call');
+            call.answer(); // Answer automatically
+
+            call.on('stream', (stream) => {
+                console.log('[P2P] Stream Received');
+                const video = document.getElementById('remoteVideo');
+                const img = document.getElementById('screenImage');
+
+                if (video) {
+                    video.srcObject = stream;
+                    video.style.display = 'block';
+                    if (img) img.style.display = 'none'; // Hide fallback
+
+                    video.onloadedmetadata = () => {
+                        video.play().catch(e => console.error('Play error:', e));
+                        this.screenWidth = video.videoWidth;
+                        this.screenHeight = video.videoHeight;
+                        if (this.el.statusText) this.el.statusText.textContent = `Video: ${video.videoWidth}x${video.videoHeight} (Stream)`;
+                    };
+                }
+            });
+
+            call.on('error', (err) => console.error('[P2P] Call error:', err));
+        });
+
+        this.peer.on('open', (id) => {
+            console.log('[P2P] My Peer ID:', id);
+            this.updateLoginStatus('Contacting PC...', 'connecting');
+
+            // Connect to PC peer: keymote-<PIN>
+            const targetId = `keymote-${pin}`;
+            console.log('[P2P] Connecting to:', targetId);
+
+            const conn = this.peer.connect(targetId);
+
+            conn.on('open', () => {
+                console.log('[P2P] Connected!');
+                this.p2pConn = conn;
+                this.isConnected = true;
+                this.isAuthenticated = true; // P2P implies auth via PIN knowledge? Or we should send auth frame.
+                // Ideally we send an auth frame, but for now let's assume PIN knowledge = access since PeerID is derived from PIN.
+
+                this.updateStatus('connected', 'Internet Connected');
+                this.updateLoginStatus('Connected via Internet!', 'success');
+                this.startPing();
+
+                // Auto-transition
+                setTimeout(() => this.showScreen('main'), 500);
+            });
+
+            conn.on('data', (data) => {
+                this.handleMessage(data); // P2P Data is usually objects, WS is strings.
+            });
+
+            conn.on('close', () => {
+                console.log('[P2P] Closed');
+                this.isConnected = false;
+                this.p2pConn = null;
+                this.updateStatus('error', 'Disconnected');
+            });
+
+            conn.on('error', (err) => {
+                console.error('[P2P] Conn Error:', err);
+                this.updateLoginStatus('Connection Failed', 'error');
+            });
+        });
+
+        this.peer.on('error', (err) => {
+            console.error('[P2P] Error:', err);
+            this.updateLoginStatus('P2P Error: ' + err.type, 'error');
+        });
     }
 
     disconnect() {
@@ -994,8 +1167,13 @@ class RemoteInputApp {
     stopPing() { if (this.pingInt) { clearInterval(this.pingInt); this.pingInt = null; } }
 
     handleMessage(data) {
+        // DOM queries for cursor indicator
+        const cursorIndicator = document.getElementById('cursorIndicator');
+        const screenViewer = document.getElementById('screenViewer');
+
         try {
-            const m = JSON.parse(data);
+            // Handle both P2P objects (raw) and WebSocket strings (JSON)
+            const m = (typeof data === 'string') ? JSON.parse(data) : data;
 
             // Handle server connection response
             if (m.type === 'connected') {
@@ -1077,59 +1255,63 @@ class RemoteInputApp {
                 this.latencies.push(Date.now() - m.time);
                 if (this.latencies.length > 10) this.latencies.shift();
                 this.el.latency.textContent = Math.round(this.latencies.reduce((a, b) => a + b, 0) / this.latencies.length) + 'ms';
-            } else if (m.type === 'screen-frame') {
-                // Display screen frame
-                const screenImg = document.getElementById('screenImage');
-                const cursorIndicator = document.getElementById('cursorIndicator');
-                const screenViewer = document.getElementById('screenViewer');
-
-                // Handle full frame (full, key, sync, or no frameType)
-                if ((m.frameType === 'full' || m.frameType === 'key' || m.frameType === 'sync' || !m.frameType) && m.data) {
-                    if (screenImg) {
-                        screenImg.src = m.data;
-                        screenImg.style.display = 'block';
-                        // Store dimensions for cursor positioning
-                        this.screenWidth = m.width;
-                        this.screenHeight = m.height;
-                    }
-                }
-                // For 'cursor' frameType, we just update cursor position below
-
-                // Position cursor indicator (for all frame types)
-                if (cursorIndicator && m.cursorX !== undefined && m.cursorY !== undefined && screenViewer) {
-                    const viewerRect = screenViewer.getBoundingClientRect();
-                    const isRotated = screenViewer.classList.contains('rotated');
-                    const effectiveWidth = isRotated ? viewerRect.height : viewerRect.width;
-                    const effectiveHeight = isRotated ? viewerRect.width : viewerRect.height;
-
-                    const screenW = m.width || this.screenWidth || 1920;
-                    const screenH = m.height || this.screenHeight || 1080;
-                    const imgAspect = screenW / screenH;
-                    const viewerAspect = effectiveWidth / effectiveHeight;
-
-                    let imgWidth, imgHeight, offsetX = 0, offsetY = 0;
-                    if (imgAspect > viewerAspect) {
-                        imgWidth = effectiveWidth;
-                        imgHeight = effectiveWidth / imgAspect;
-                        offsetY = (effectiveHeight - imgHeight) / 2;
-                    } else {
-                        imgHeight = effectiveHeight;
-                        imgWidth = effectiveHeight * imgAspect;
-                        offsetX = (effectiveWidth - imgWidth) / 2;
-                    }
-
-                    let cursorXPx = offsetX + (m.cursorX / screenW) * imgWidth;
-                    let cursorYPx = offsetY + (m.cursorY / screenH) * imgHeight;
-
-                    cursorIndicator.style.left = cursorXPx + 'px';
-                    cursorIndicator.style.top = cursorYPx + 'px';
-                    cursorIndicator.style.display = 'block';
-                }
+            } else if (m.type === 'screen-chunk') {
+                // Legacy chunk handling removed
+                return;
+            } else if (m.data) {
+                // Legacy frame handling removed
+                return;
             }
+            // For 'cursor' frameType, we just update cursor position below
+
+            // Position cursor indicator (for all frame types)
+            if (cursorIndicator && m.cursorX !== undefined && m.cursorY !== undefined && screenViewer) {
+                const viewerRect = screenViewer.getBoundingClientRect();
+                const isRotated = screenViewer.classList.contains('rotated');
+                const effectiveWidth = isRotated ? viewerRect.height : viewerRect.width;
+                const effectiveHeight = isRotated ? viewerRect.width : viewerRect.height;
+
+                const screenW = m.width || this.screenWidth || 1920;
+                const screenH = m.height || this.screenHeight || 1080;
+                const imgAspect = screenW / screenH;
+                const viewerAspect = effectiveWidth / effectiveHeight;
+
+                let imgWidth, imgHeight, offsetX = 0, offsetY = 0;
+                if (imgAspect > viewerAspect) {
+                    imgWidth = effectiveWidth;
+                    imgHeight = effectiveWidth / imgAspect;
+                    offsetY = (effectiveHeight - imgHeight) / 2;
+                } else {
+                    imgHeight = effectiveHeight;
+                    imgWidth = effectiveHeight * imgAspect;
+                    offsetX = (effectiveWidth - imgWidth) / 2;
+                }
+
+                let cursorXPx = offsetX + (m.cursorX / screenW) * imgWidth;
+                let cursorYPx = offsetY + (m.cursorY / screenH) * imgHeight;
+
+                cursorIndicator.style.left = cursorXPx + 'px';
+                cursorIndicator.style.top = cursorYPx + 'px';
+                cursorIndicator.style.display = 'block';
+            }
+
         } catch { }
     }
 
-    send(m) { if (this.isConnected && this.ws) { m.id = ++this.messageId; this.ws.send(JSON.stringify(m)); return true; } return false; }
+    send(m) {
+        // P2P Priority
+        if (this.p2pConn && this.p2pConn.open) {
+            this.p2pConn.send(m);
+            return true;
+        }
+        // WebSocket Fallback
+        if (this.isConnected && this.ws) {
+            m.id = ++this.messageId;
+            this.ws.send(JSON.stringify(m));
+            return true;
+        }
+        return false;
+    }
 
     handleInput(e) {
         const v = e.target.value;

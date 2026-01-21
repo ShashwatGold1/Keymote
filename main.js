@@ -3,7 +3,7 @@
  * Turn your phone into a wireless keyboard & mouse for your computer
  */
 
-const { app, BrowserWindow, ipcMain, nativeTheme, Tray, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, Tray, Menu, desktopCapturer } = require('electron');
 const path = require('path');
 const QRCode = require('qrcode');
 
@@ -11,7 +11,6 @@ const QRCode = require('qrcode');
 const WebSocketServer = require('./websocket-server');
 const DiscoveryService = require('./discovery');
 const ScreenCapturer = require('./screen-capturer');
-const TailscaleService = require('./tailscale-service');
 let keyboardInjector;
 let mouseInjector;
 
@@ -227,6 +226,14 @@ async function initializeServices() {
         // Initialize screen capturer
         screenCapturer = new ScreenCapturer(wsServer);
 
+        // Setup P2P Frame Forwarding (Critical Fix)
+        screenCapturer.on('frame', (frameData) => {
+            console.log('[Main] Frame generated:', frameData.data.length); // ENABLED LOG
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('p2p-screen-frame', frameData);
+            }
+        });
+
         // Handle screen streaming requests from mobile
         wsServer.onScreenRequest = (action) => {
             if (action === 'start') {
@@ -300,11 +307,123 @@ ipcMain.handle('get-server-info', async () => {
     };
 });
 
+// IPC: Get Screen Sources for WebRTC
+ipcMain.handle('get-sources', async () => {
+    try {
+        const sources = await desktopCapturer.getSources({ types: ['screen'] });
+        return sources.map(source => ({
+            id: source.id,
+            name: source.name,
+            thumbnail: source.thumbnail.toDataURL()
+        }));
+    } catch (error) {
+        console.error('[Main] Failed to get sources:', error);
+        return [];
+    }
+});
+
+// P2P Remote Input Handler
+ipcMain.on('remote-input', (event, data) => {
+    // Determine type of data
+    // Assuming data is standard JSON protocol used by mobile app
+    if (!data) return;
+
+    // console.log('[Main] P2P Input:', data.type); // DEBUG LOG - Silenced for performance
+
+    // If it's pure mouse object {x, y, ...}
+    // Mobile app sends { type: 'mouse', action: 'left' } etc.
+    if (data.type === 'mouse' || data.type === 'mousemove' || data.type === 'click' || data.type === 'scroll') {
+        if (mouseInjector) mouseInjector.handleMouseEvent(data);
+        return;
+    }
+
+    // If it's keyboard object
+    if (data.type === 'keydown' || data.type === 'keyup' || data.type === 'text') {
+        if (keyboardInjector) keyboardInjector.handleKeyEvent(data);
+        return;
+    }
+
+    // Handle screen share requests
+    if (data.type === 'screen' || data.type === 'screen-req') {
+        if (screenCapturer) {
+            console.log('[Main] Screen share request:', data.action);
+            if (data.action === 'start') {
+                // screenCapturer.startStreaming(); // Disabled: Using Native WebRTC
+                startCursorPolling(event.sender);
+            }
+            else if (data.action === 'stop') {
+                // screenCapturer.stopStreaming(); // Disabled
+                stopCursorPolling();
+            }
+
+        }
+        return;
+    }
+
+    // ... rest of fallbacks
+    if (data.x !== undefined || data.dx !== undefined) {
+        if (mouseInjector) mouseInjector.handleMouseEvent(data);
+    }
+});
+
+// Cursor Polling for "Blue Dot"
+let cursorInterval = null;
+const { screen } = require('electron');
+
+function startCursorPolling(rendererWebContents) {
+    if (cursorInterval) clearInterval(cursorInterval);
+    cursorInterval = setInterval(() => {
+        try {
+            const point = screen.getCursorScreenPoint();
+            const primaryDisplay = screen.getPrimaryDisplay();
+            const { width, height } = primaryDisplay.size;
+
+            // Send cursor position to renderer to forward to phone
+            rendererWebContents.send('p2p-screen-frame', {
+                type: 'cursor',
+                cursorX: point.x,
+                cursorY: point.y,
+                width: width,
+                height: height
+            });
+        } catch (e) { }
+    }, 50); // 20 FPS updates
+}
+
+function stopCursorPolling() {
+    if (cursorInterval) {
+        clearInterval(cursorInterval);
+        cursorInterval = null;
+    }
+}
+
+
+// Forward screen frames to renderer for P2P broadcast
+if (screenCapturer) {
+    screenCapturer.on('frame', (frameData) => {
+        // console.log('[Main] Frame generated:', frameData.data.length); // Verbose log
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            // Send frame to renderer to be broadcasted via P2P
+            mainWindow.webContents.send('p2p-screen-frame', frameData);
+        } else {
+            console.warn('[Main] Cannot send frame, mainWindow missing');
+        }
+    });
+}
+
 ipcMain.handle('get-connection-status', () => {
     if (!wsServer) {
         return { connected: false, clientCount: 0, clients: [] };
     }
     return wsServer.getConnectionInfo();
+});
+
+// Forward Renderer Logs to Terminal
+ipcMain.on('renderer-log', (event, { type, message }) => {
+    const prefix = '[Renderer]';
+    if (type === 'error') console.error(prefix, message);
+    else if (type === 'warn') console.warn(prefix, message);
+    else console.log(prefix, message);
 });
 
 ipcMain.handle('get-theme', () => {

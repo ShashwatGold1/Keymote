@@ -145,6 +145,11 @@
                     <span>Remember this device</span>
                 </label>
 
+                <label class="login-checkbox" style="margin-top: 8px;">
+                    <input type="checkbox" id="internetMode">
+                    <span>Connect via Internet (P2P)</span>
+                </label>
+
                 <button id="loginConnectBtn" class="login-btn">
                     <span class="btn-text">Connect</span>
                     <span class="btn-loader" style="display: none;"></span>
@@ -155,6 +160,8 @@
         </div>
     </div>
 
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="app.js"></script>
     <!-- ============================================
          MAIN APP - Keyboard, Screen Share, etc.
          ============================================ -->
@@ -210,8 +217,11 @@
                     <span class="corner-indicator corner-bottom">B</span>
                     <span class="corner-indicator corner-left">L</span>
                     <span class="corner-indicator corner-right">R</span>
-                    <img id="screenImage" class="screen-image" alt="Desktop Screen" style="display:none;">
-                    <div id="cursorIndicator" class="cursor-indicator" style="display:none;"></div>
+                    <video id="remoteVideo" autoplay playsinline
+                        style="display:none; width:100%; height:100%; object-fit:contain; background:black; pointer-events: none;"></video>
+                    <!-- <img id="screenImage" class="screen-image" alt="Desktop Screen" style="display:none;"> -->
+                    <div id="cursorIndicator" class="cursor-indicator" style="display:none; z-index: 100 !important;">
+                    </div>
                     <div class="trackpad-overlay" id="trackpadOverlay">
                         <span class="trackpad-hint" id="trackpadHint">Drag to move • Tap to click</span>
                     </div>

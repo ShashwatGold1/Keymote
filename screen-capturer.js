@@ -3,27 +3,32 @@
  */
 
 const { desktopCapturer, screen } = require('electron');
+const EventEmitter = require('events');
 
-class ScreenCapturer {
+class ScreenCapturer extends EventEmitter {
     constructor(wsServer) {
+        super(); // Initialize EventEmitter
         this.wsServer = wsServer;
         this.isStreaming = false;
-        this.intervalId = null;
+        this.interval = null;
+        // Reduced resolution for better performance
+        this.screenWidth = 1280;
+        this.screenHeight = 720;
+        this.quality = 35; // Lower quality for speed
+        this.lastFrameTime = 0;
         this.fps = 5;
-        this.quality = 60;
-        this.screenWidth = 0;
-        this.screenHeight = 0;
     }
 
     async startStreaming() {
         if (this.isStreaming) return;
 
-        const primaryDisplay = screen.getPrimaryDisplay();
-        this.screenWidth = primaryDisplay.size.width;
-        this.screenHeight = primaryDisplay.size.height;
+        // Force 480p resolution for P2P reliability
+        // 1920x1080 is too big for WebRTC Data Channels
+        this.screenWidth = 854;
+        this.screenHeight = 480;
 
         console.log('[ScreenCapturer] Starting at', this.fps, 'FPS,',
-            this.screenWidth, 'x', this.screenHeight);
+            this.screenWidth, 'x', this.screenHeight, '(Forced 480p)');
 
         this.isStreaming = true;
         this.intervalId = setInterval(() => this.captureFrame(), 1000 / this.fps);
@@ -33,10 +38,13 @@ class ScreenCapturer {
         if (!this.isStreaming) return;
 
         try {
+            console.log('[ScreenCapturer] Capturing...'); // DEBUG
             const sources = await desktopCapturer.getSources({
                 types: ['screen'],
                 thumbnailSize: { width: this.screenWidth, height: this.screenHeight }
             });
+
+            console.log('[ScreenCapturer] Sources found:', sources.length); // DEBUG
 
             if (sources.length === 0) return;
 
@@ -46,17 +54,25 @@ class ScreenCapturer {
             const cursorPos = screen.getCursorScreenPoint();
             const dataUrl = thumbnail.toJPEG(this.quality).toString('base64');
 
+            const frameData = {
+                type: 'screen-frame',
+                data: 'data:image/jpeg;base64,' + dataUrl,
+                width: this.screenWidth,
+                height: this.screenHeight,
+                cursorX: cursorPos.x,
+                cursorY: cursorPos.y,
+                timestamp: Date.now()
+            };
+
+            // Broadcast to WebSocket clients
             if (this.wsServer) {
-                this.wsServer.broadcast({
-                    type: 'screen-frame',
-                    data: 'data:image/jpeg;base64,' + dataUrl,
-                    width: this.screenWidth,
-                    height: this.screenHeight,
-                    cursorX: cursorPos.x,
-                    cursorY: cursorPos.y,
-                    timestamp: Date.now()
-                });
+                this.wsServer.broadcast(frameData);
             }
+
+            // Emit locally (for P2P)
+            console.log('[ScreenCapturer] Emitting frame event'); // DEBUG
+            this.emit('frame', frameData);
+
         } catch (error) {
             console.error('[ScreenCapturer] Error:', error.message);
         }

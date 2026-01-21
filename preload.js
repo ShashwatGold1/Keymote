@@ -17,6 +17,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     minimizeWindow: () => ipcRenderer.send('window-minimize'),
     closeWindow: () => ipcRenderer.send('window-close'),
 
+    // Remote Input (P2P)
+    sendRemoteInput: (data) => ipcRenderer.send('remote-input', data),
+
     // Event listeners
     onServerReady: (callback) => {
         ipcRenderer.on('server-ready', (event, info) => callback(info));
@@ -31,9 +34,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.on('tunnel-url', (event, info) => callback(info));
     },
 
-    // Tailscale control
-    tailscaleStatus: () => ipcRenderer.invoke('tailscale-status'),
-    tailscaleConnect: () => ipcRenderer.invoke('tailscale-connect'),
-    tailscaleDisconnect: () => ipcRenderer.invoke('tailscale-disconnect')
+    // Screen Share Source ID logic
+    getSources: () => ipcRenderer.invoke('get-sources'),
+
+    // P2P Screen Share (Legacy handling - can clean up later)
+    onP2PScreenFrame: (callback) => {
+        ipcRenderer.on('p2p-screen-frame', (event, frameData) => callback(frameData));
+    },
+
+    // Logging (Renderer -> Terminal)
+    log: (type, message) => ipcRenderer.send('renderer-log', { type, message })
 });
 
