@@ -1,16 +1,17 @@
 /**
  * Keymote - Electron Main Process
  * Turn your phone into a wireless keyboard & mouse for your computer
+ * P2P Only Mode - WebSocket removed
  */
 
-const { app, BrowserWindow, ipcMain, nativeTheme, Tray, Menu, desktopCapturer } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, Tray, Menu, desktopCapturer, screen } = require('electron');
 const path = require('path');
 const QRCode = require('qrcode');
+const os = require('os');
+const fs = require('fs');
+const AutoLaunch = require('auto-launch');
 
-// Import our modules
-const WebSocketServer = require('./websocket-server');
-const DiscoveryService = require('./discovery');
-const ScreenCapturer = require('./screen-capturer');
+// Import input injectors
 let keyboardInjector;
 let mouseInjector;
 
@@ -35,12 +36,8 @@ try {
         handleMouseEvent: (event) => { console.log('[Mock] Mouse:', event); return true; }
     };
 }
-const os = require('os');
-const AutoLaunch = require('auto-launch');
 
-const PORT = 8765;
-
-// Generate session PIN (6 digits)
+// Generate session PIN (6 digits) - Used by P2P
 const SESSION_PIN = Math.floor(100000 + Math.random() * 900000).toString();
 const COMPUTER_NAME = os.hostname();
 
@@ -85,14 +82,9 @@ class TokenStorage {
     }
 }
 
-const fs = require('fs');
 const tokenStorage = new TokenStorage();
 
 let mainWindow;
-let wsServer;
-let discoveryService;
-let screenCapturer;
-let serverInfo = null;
 let windowReady = false;
 let tray = null;
 let autoLauncher = null;
@@ -123,10 +115,7 @@ function createWindow() {
     // Track when window is ready to receive messages
     mainWindow.webContents.on('did-finish-load', () => {
         windowReady = true;
-        // Send server info if already available
-        if (serverInfo) {
-            sendServerInfoToRenderer();
-        }
+        sendServerInfoToRenderer();
     });
 
     // Show window when ready
@@ -174,28 +163,21 @@ function createTray() {
 }
 
 /**
- * Send server info to renderer when ready
+ * Send server info to renderer when ready (P2P mode only)
  */
 async function sendServerInfoToRenderer() {
-    if (!mainWindow || mainWindow.isDestroyed() || !windowReady || !serverInfo) {
+    if (!mainWindow || mainWindow.isDestroyed() || !windowReady) {
         return;
     }
-    const url = discoveryService.getConnectionURL();
 
-    // Create connection data for QR code (contains all info needed to connect)
+    // Create connection data for QR code (P2P only - just PIN and name)
     const connectionData = {
-        url: url,
         pin: SESSION_PIN,
-        name: COMPUTER_NAME,
-        ip: serverInfo.ip,
-        port: serverInfo.port,
-        tailscale: serverInfo.tailscaleIP
+        name: COMPUTER_NAME
     };
 
     const qrCode = await generateQRCode(JSON.stringify(connectionData));
     mainWindow.webContents.send('server-ready', {
-        ...serverInfo,
-        url,
         qrCode,
         pin: SESSION_PIN,
         computerName: COMPUTER_NAME
@@ -204,55 +186,13 @@ async function sendServerInfoToRenderer() {
 }
 
 /**
- * Initialize services
+ * Initialize services (P2P mode only)
  */
 async function initializeServices() {
     try {
         // Initialize injectors
         keyboardInjector.initialize();
         mouseInjector.initialize();
-
-        // Start discovery service
-        discoveryService = new DiscoveryService(PORT);
-        serverInfo = await discoveryService.start();
-        console.log('[Main] Discovery started:', serverInfo);
-
-        // Start WebSocket server with PIN authentication and token storage
-        wsServer = new WebSocketServer(keyboardInjector, mouseInjector, PORT, SESSION_PIN, COMPUTER_NAME, tokenStorage);
-        await wsServer.start();
-        wsServer.startHeartbeat();
-        console.log('[Main] WebSocket server started on port', PORT);
-
-        // Initialize screen capturer
-        screenCapturer = new ScreenCapturer(wsServer);
-
-        // Setup P2P Frame Forwarding (Critical Fix)
-        screenCapturer.on('frame', (frameData) => {
-            console.log('[Main] Frame generated:', frameData.data.length); // ENABLED LOG
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('p2p-screen-frame', frameData);
-            }
-        });
-
-        // Handle screen streaming requests from mobile
-        wsServer.onScreenRequest = (action) => {
-            if (action === 'start') {
-                screenCapturer.startStreaming();
-            } else if (action === 'stop') {
-                screenCapturer.stopStreaming();
-            }
-        };
-
-        // Handle connection changes
-        wsServer.onConnectionChange = (info) => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('connection-change', info);
-            }
-            // Stop streaming if no clients connected
-            if (!info.connected && screenCapturer) {
-                screenCapturer.stopStreaming();
-            }
-        };
 
         // Send server info to renderer (if window is ready)
         sendServerInfoToRenderer();
@@ -265,9 +205,9 @@ async function initializeServices() {
 /**
  * Generate QR code for connection
  */
-async function generateQRCode(url) {
+async function generateQRCode(data) {
     try {
-        return await QRCode.toDataURL(url, {
+        return await QRCode.toDataURL(data, {
             width: 200,
             margin: 2,
             color: {
@@ -295,15 +235,15 @@ ipcMain.on('window-close', () => {
 });
 
 ipcMain.handle('get-server-info', async () => {
-    if (!serverInfo) {
-        return null;
-    }
-    const url = discoveryService.getConnectionURL();
-    const qrCode = await generateQRCode(url);
+    const connectionData = {
+        pin: SESSION_PIN,
+        name: COMPUTER_NAME
+    };
+    const qrCode = await generateQRCode(JSON.stringify(connectionData));
     return {
-        ...serverInfo,
-        url,
-        qrCode
+        qrCode,
+        pin: SESSION_PIN,
+        computerName: COMPUTER_NAME
     };
 });
 
@@ -324,43 +264,32 @@ ipcMain.handle('get-sources', async () => {
 
 // P2P Remote Input Handler
 ipcMain.on('remote-input', (event, data) => {
-    // Determine type of data
-    // Assuming data is standard JSON protocol used by mobile app
     if (!data) return;
 
-    // console.log('[Main] P2P Input:', data.type); // DEBUG LOG - Silenced for performance
-
-    // If it's pure mouse object {x, y, ...}
-    // Mobile app sends { type: 'mouse', action: 'left' } etc.
+    // Mouse events
     if (data.type === 'mouse' || data.type === 'mousemove' || data.type === 'click' || data.type === 'scroll') {
         if (mouseInjector) mouseInjector.handleMouseEvent(data);
         return;
     }
 
-    // If it's keyboard object
+    // Keyboard events
     if (data.type === 'keydown' || data.type === 'keyup' || data.type === 'text' || data.type === 'key' || data.type === 'shortcut') {
         if (keyboardInjector) keyboardInjector.handleKeyEvent(data);
         return;
     }
 
-    // Handle screen share requests
+    // Handle screen share requests (cursor polling only - video uses native WebRTC)
     if (data.type === 'screen' || data.type === 'screen-req') {
-        if (screenCapturer) {
-            console.log('[Main] Screen share request:', data.action);
-            if (data.action === 'start') {
-                // screenCapturer.startStreaming(); // Disabled: Using Native WebRTC
-                startCursorPolling(event.sender);
-            }
-            else if (data.action === 'stop') {
-                // screenCapturer.stopStreaming(); // Disabled
-                stopCursorPolling();
-            }
-
+        console.log('[Main] Screen share request:', data.action);
+        if (data.action === 'start') {
+            startCursorPolling(event.sender);
+        } else if (data.action === 'stop') {
+            stopCursorPolling();
         }
         return;
     }
 
-    // ... rest of fallbacks
+    // Fallback for raw mouse data
     if (data.x !== undefined || data.dx !== undefined) {
         if (mouseInjector) mouseInjector.handleMouseEvent(data);
     }
@@ -368,7 +297,6 @@ ipcMain.on('remote-input', (event, data) => {
 
 // Cursor Polling for "Blue Dot"
 let cursorInterval = null;
-const { screen } = require('electron');
 
 function startCursorPolling(rendererWebContents) {
     if (cursorInterval) clearInterval(cursorInterval);
@@ -397,25 +325,9 @@ function stopCursorPolling() {
     }
 }
 
-
-// Forward screen frames to renderer for P2P broadcast
-if (screenCapturer) {
-    screenCapturer.on('frame', (frameData) => {
-        // console.log('[Main] Frame generated:', frameData.data.length); // Verbose log
-        if (mainWindow && !mainWindow.isDestroyed()) {
-            // Send frame to renderer to be broadcasted via P2P
-            mainWindow.webContents.send('p2p-screen-frame', frameData);
-        } else {
-            console.warn('[Main] Cannot send frame, mainWindow missing');
-        }
-    });
-}
-
 ipcMain.handle('get-connection-status', () => {
-    if (!wsServer) {
-        return { connected: false, clientCount: 0, clients: [] };
-    }
-    return wsServer.getConnectionInfo();
+    // P2P mode - connection is managed by renderer.js PeerJS
+    return { connected: false, clientCount: 0, clients: [] };
 });
 
 // Forward Renderer Logs to Terminal
@@ -454,24 +366,6 @@ ipcMain.handle('set-auto-launch', async (event, enabled) => {
     return false;
 });
 
-// Tailscale control handlers
-ipcMain.handle('tailscale-status', async () => {
-    return await TailscaleService.getStatus();
-});
-
-ipcMain.handle('tailscale-connect', async () => {
-    const connected = await TailscaleService.connect();
-    if (connected) {
-        // Resend server info with new Tailscale IP
-        setTimeout(sendServerInfoToRenderer, 1000);
-    }
-    return connected;
-});
-
-ipcMain.handle('tailscale-disconnect', async () => {
-    return await TailscaleService.disconnect();
-});
-
 // App lifecycle
 app.whenReady().then(async () => {
     // Initialize auto-launcher
@@ -494,18 +388,12 @@ app.whenReady().then(async () => {
 // Don't quit when window is closed (runs in tray)
 app.on('window-all-closed', () => {
     // Don't quit - keep running in tray
-    // Only cleanup when actually quitting
 });
 
 // Before quit - cleanup
 app.on('before-quit', async () => {
     isQuitting = true;
-    if (wsServer) {
-        await wsServer.stop();
-    }
-    if (discoveryService) {
-        await discoveryService.stop();
-    }
+    stopCursorPolling();
 });
 
 // Handle system theme changes

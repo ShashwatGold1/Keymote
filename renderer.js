@@ -26,6 +26,10 @@ const el = {
     startupToggle: document.getElementById('startupToggle')
 };
 
+// Store server info for reconnection
+let lastServerInfo = null;
+let peer = null;
+
 // Log Forwarding (Debug)
 const originalLog = console.log;
 const originalWarn = console.warn;
@@ -125,10 +129,11 @@ function handleConnectionChange(info) {
 }
 
 // PeerJS Logic
-let peer = null;
-
 function initPeerJS(info) {
     if (!info || !info.pin) return;
+
+    // Store info for reconnection
+    lastServerInfo = info;
 
     // Create peer with ID based on PIN
     const peerId = `keymote-${info.pin}`;
@@ -166,13 +171,28 @@ function initPeerJS(info) {
             if (el.pinSection && !el.pinSection.innerText.includes('Internet Ready')) {
                 el.pinSection.appendChild(publicBadge);
             }
+
+            // Ensure QR is visible when peer is ready but not connected
+            ensureQRVisible();
         });
 
         peer.on('connection', (conn) => {
             console.log('[PeerJS] Incoming connection from:', conn.peer);
 
+            // Bidirectional heartbeat monitoring
+            let lastPingTime = Date.now();
+            let heartbeatMonitor = null;
+
             conn.on('data', (data) => {
                 // console.log('[PeerJS] Received Data:', data ? data.type : 'raw'); // Silenced for performance
+
+                // Handle ping - respond with pong AND track ping time
+                if (data && data.type === 'ping') {
+                    console.log('[Renderer] Received ping, sending pong');
+                    lastPingTime = Date.now(); // Track last ping time
+                    conn.send({ type: 'pong', time: Date.now() });
+                    return;
+                }
 
                 // Handle Screen Share Request locally (Native Stream)
                 if (data && (data.type === 'screen' || data.type === 'screen-req') && data.action === 'start') {
@@ -189,12 +209,42 @@ function initPeerJS(info) {
             conn.on('open', () => {
                 console.log('[PeerJS] Data Channel OPEN! Connection Successful.');
                 updateStatus('Connected (P2P)', 'Device connected via Internet');
-                el.qrSection.style.display = 'none';
+                if (el.qrSection) el.qrSection.style.display = 'none';
+
+                // Start bidirectional heartbeat monitor
+                console.log('[Renderer] Starting heartbeat monitor');
+                lastPingTime = Date.now();
+                heartbeatMonitor = setInterval(() => {
+                    const timeSinceLastPing = Date.now() - lastPingTime;
+                    console.log(`[Renderer] Time since last ping: ${timeSinceLastPing}ms`);
+
+                    if (timeSinceLastPing > 6000) {
+                        console.error('[Renderer] Connection dead - no ping for 6+ seconds');
+                        clearInterval(heartbeatMonitor);
+                        heartbeatMonitor = null;
+
+                        // Clean up and show QR
+                        if (conn && conn.open) {
+                            conn.close();
+                        }
+                        ensureQRVisible();
+                        handleConnectionChange({ connected: false });
+                    }
+                }, 3000);
             });
 
             conn.on('close', () => {
                 console.log('[PeerJS] Connection closed');
+
+                // Stop heartbeat monitor
+                if (heartbeatMonitor) {
+                    clearInterval(heartbeatMonitor);
+                    heartbeatMonitor = null;
+                }
+
                 handleConnectionChange({ connected: false });
+                // Ensure QR is visible when connection closes
+                ensureQRVisible();
             });
 
             conn.on('error', (err) => {
@@ -204,6 +254,37 @@ function initPeerJS(info) {
 
         peer.on('error', (err) => {
             console.error('[PeerJS] Error:', err);
+
+            // Auto-reconnect on "Lost connection to server" error
+            if (err.type === 'network' || err.type === 'server-error' || err.message.includes('Lost connection')) {
+                console.log('[PeerJS] Connection lost. Destroying peer and reconnecting in 3 seconds...');
+
+                // Properly destroy the peer first
+                if (peer) {
+                    try {
+                        peer.destroy();
+                        peer = null;
+                    } catch (e) {
+                        console.error('[PeerJS] Error destroying peer:', e);
+                    }
+                }
+
+                // Wait 3 seconds for server to release the ID
+                setTimeout(() => {
+                    if (lastServerInfo) {
+                        console.log('[PeerJS] Attempting reconnect...');
+                        initPeerJS(lastServerInfo);
+                    }
+                }, 3000);
+            } else if (err.type === 'unavailable-id') {
+                // ID still taken, wait longer
+                console.log('[PeerJS] ID still taken. Waiting 5 more seconds...');
+                setTimeout(() => {
+                    if (lastServerInfo) {
+                        initPeerJS(lastServerInfo);
+                    }
+                }, 5000);
+            }
         });
 
     } catch (e) {
@@ -301,6 +382,15 @@ async function init() {
 
     // Try init peerjs here too in case serverinfo is already ready
     if (serverInfo) initPeerJS(serverInfo);
+}
+
+// Helper function to ensure QR code is visible when not connected
+function ensureQRVisible() {
+    if (el.qrSection) {
+        el.qrSection.style.display = 'block';
+        console.log('[Renderer] QR section set to visible');
+    }
+    updateStatus('Waiting', 'Scan QR code to connect');
 }
 
 document.addEventListener('DOMContentLoaded', init);

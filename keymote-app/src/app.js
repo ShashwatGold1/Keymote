@@ -266,10 +266,8 @@ class RemoteInputApp {
             if (result && result.barcodes && result.barcodes.length > 0) {
                 // v6 returns { barcodes: [{ displayValue: '...' }] }
                 this.handleQrData(result.barcodes[0].displayValue);
-            } else if (result && result.barcodes) {
-                // Cancelled or no code
             } else {
-                console.log("Unexpected result format:", result);
+                console.log("Scanner cancelled or no result");
             }
         } catch (error) {
             console.error('ML Kit Scanner failed:', error);
@@ -451,45 +449,35 @@ class RemoteInputApp {
     }
 
     handleQrData(data) {
+        // Show processing overlay immediately after scan
+        this.showProcessingOverlay('Connecting to Keymote...');
+
         try {
             const connectionData = JSON.parse(data);
             console.log('QR Connection data:', connectionData);
 
-            // Extract connection info
-            this.customServer = connectionData.url
-                ? connectionData.url.replace('http://', '').replace('https://', '')
-                : `${connectionData.ip}:${connectionData.port}`;
+            // Extract connection info (P2P only - just PIN and name)
             this.computerName = connectionData.name || '';
             this.pendingPin = connectionData.pin || '';
             this.pendingRememberMe = true;
 
-            // Save settings
-            localStorage.setItem('customServer', this.customServer);
+            // Save computer name
             localStorage.setItem('computerName', this.computerName);
 
-            // If PIN is present, use P2P mode directly (for internet connections)
+            // P2P mode - connect using PIN
             if (this.pendingPin) {
-                console.log('QR has PIN, using P2P mode...');
-                this.showProcessingOverlay('Processing...');
+                console.log('QR has PIN, connecting via P2P...');
                 this.updateLoginStatus('Connecting via P2P...', 'connecting');
                 this.connectP2P(this.pendingPin);
                 return;
-            }
-
-            // Fallback to regular connect (WebSocket for local network)
-            this.updateLoginStatus('Connecting via QR...', 'connecting');
-            this.connect();
-        } catch (error) {
-            console.error('Invalid QR data:', error);
-            // Try treating it as a simple URL
-            if (data && data.includes(':')) {
-                this.customServer = data.replace('http://', '').replace('https://', '');
-                localStorage.setItem('customServer', this.customServer);
-                this.updateLoginStatus('Connecting...', 'connecting');
-                this.connect();
             } else {
-                alert('Invalid QR code. Please scan the QR from your Keymote PC app.');
+                this.hideProcessingOverlay(); // Error case
+                alert('Invalid QR code. PIN missing.');
             }
+        } catch (error) {
+            this.hideProcessingOverlay(); // Error case
+            console.error('Invalid QR data:', error);
+            alert('Invalid QR code. Please scan the QR from your Keymote PC app.');
         }
     }
 
@@ -518,8 +506,10 @@ class RemoteInputApp {
 
     // Render saved devices to the login screen list
     renderSavedDevices() {
+        console.log('[DEBUG] renderSavedDevices called');
         const list = this.loginEl.savedList;
         const container = this.loginEl.savedConnections;
+        console.log('[DEBUG] list:', list, 'container:', container);
         if (!list) return;
 
         const devices = Object.entries(this.savedDevices);
@@ -551,11 +541,42 @@ class RemoteInputApp {
                     this.customServer = device.serverAddress;
                     this.computerName = device.computerName;
                     this.authToken = device.token;
-                    this.showProcessingOverlay('Connecting...');
-                    this.connect();
+                    console.log('[SavedDevice] Showing overlay for:', device.computerName);
+                    this.showProcessingOverlay('Connecting to ' + (device.computerName || 'Device') + '...');
+
+                    // Small delay to ensure overlay renders
+                    setTimeout(() => {
+                        this.connectP2P(key); // Saved devices key IS the PIN
+                    }, 100);
                 }
             });
         });
+
+        // Add click handlers to entire card
+        list.querySelectorAll('.saved-device-item').forEach(card => {
+            card.addEventListener('click', (e) => {
+                // Don't connect if clicking delete button
+                if (e.target.closest('.saved-device-delete')) {
+                    return;
+                }
+
+                const key = card.dataset.key;
+                const device = this.savedDevices[key];
+                console.log('[SavedDevice-Card] Clicked! Key:', key);
+
+                if (device) {
+                    this.computerName = device.computerName;
+                    console.log('[SavedDevice-Card] Showing overlay');
+                    this.showProcessingOverlay('Connecting to ' + (device.computerName || 'Device') + '...');
+
+                    setTimeout(() => {
+                        console.log('[SavedDevice-Card] Connecting P2P');
+                        this.connectP2P(key);
+                    }, 100);
+                }
+            });
+        });
+        console.log('[DEBUG] Attached click handlers to', list.querySelectorAll('.saved-device-item').length, 'cards');
 
         list.querySelectorAll('.saved-device-delete').forEach(btn => {
             btn.addEventListener('click', (e) => {
@@ -566,17 +587,91 @@ class RemoteInputApp {
         });
     }
 
-    // Processing Overlay helpers
+    // Processing Overlay helpers (New Reliable Implementation)
     showProcessingOverlay(text = 'Processing...') {
         const overlay = document.getElementById('processingOverlay');
         const textEl = document.getElementById('processingText');
-        if (overlay) overlay.style.display = 'flex';
+
+        if (overlay) {
+            // Force high z-index and display
+            overlay.style.zIndex = '99999';
+            overlay.style.display = 'flex';
+        }
         if (textEl) textEl.textContent = text;
+
+        // Safety timeout - auto hide after 15 seconds if stuck
+        if (this.processingTimeout) clearTimeout(this.processingTimeout);
+        this.processingTimeout = setTimeout(() => {
+            console.warn('Processing overlay timed out - hiding automatically');
+            this.hideProcessingOverlay();
+        }, 15000);
     }
 
     hideProcessingOverlay() {
         const overlay = document.getElementById('processingOverlay');
+        const textEl = document.getElementById('processingText');
+        const spinner = overlay?.querySelector('.processing-spinner');
+
         if (overlay) overlay.style.display = 'none';
+
+        // Reset spinner and text to defaults
+        if (spinner) {
+            spinner.style.display = '';
+            spinner.style.borderTopColor = '';
+        }
+        if (textEl) {
+            textEl.style.color = '';
+        }
+
+        // Clear safety timeout
+        if (this.processingTimeout) {
+            clearTimeout(this.processingTimeout);
+            this.processingTimeout = null;
+        }
+    }
+
+    // Show success overlay (green)
+    showSuccessOverlay(text = 'Connected!') {
+        const overlay = document.getElementById('processingOverlay');
+        const textEl = document.getElementById('processingText');
+        const spinner = overlay?.querySelector('.processing-spinner');
+
+        if (overlay) {
+            overlay.style.zIndex = '99999';
+            overlay.style.display = 'flex';
+        }
+        if (textEl) {
+            textEl.textContent = '✓ ' + text;
+            textEl.style.color = '#4ADE80'; // Green
+        }
+        if (spinner) {
+            spinner.style.display = 'none'; // Hide spinner
+        }
+
+        // Auto hide after 1 second
+        setTimeout(() => this.hideProcessingOverlay(), 1000);
+    }
+
+    // Show error overlay (red)
+    showErrorOverlay(text = 'Connection Failed') {
+        const overlay = document.getElementById('processingOverlay');
+        const textEl = document.getElementById('processingText');
+        const spinner = overlay?.querySelector('.processing-spinner');
+
+        if (overlay) {
+            overlay.style.zIndex = '99999';
+            overlay.style.display = 'flex';
+        }
+        if (textEl) {
+            textEl.textContent = '✕ ' + text;
+            textEl.style.color = '#F87171'; // Red
+        }
+        if (spinner) {
+            spinner.style.display = 'none'; // Hide spinner
+        }
+
+        // Auto hide after 2 seconds
+        setTimeout(() => this.hideProcessingOverlay(), 2000);
     }
 
     saveDevice(serverAddress, computerName, token) {
@@ -1001,59 +1096,10 @@ class RemoteInputApp {
         // Disconnect if already connected
         this.disconnect();
 
-        // Check for Internet Mode (P2P)
-        const internetMode = document.getElementById('internetMode');
-        if (internetMode && internetMode.checked) {
-            console.log('Connecting via Internet (P2P)...');
-            this.pendingPin = this.loginEl.pin.value;
-            this.connectP2P(this.pendingPin);
-            return;
-        }
-
-        // Determine server URL
-        let url = '';
-        if (this.customServer) {
-            let server = this.customServer.trim();
-            // Convert HTTP/HTTPS URLs to WebSocket protocols
-            if (server.startsWith('https://')) {
-                server = 'wss://' + server.slice(8);
-            } else if (server.startsWith('http://')) {
-                server = 'ws://' + server.slice(7);
-            } else if (!server.includes('://')) {
-                // No protocol - default to ws://
-                server = `ws://${server}`;
-            }
-            url = server;
-        } else {
-            url = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
-        }
-
-        this.websocketConnect(url);
-    }
-
-    websocketConnect(url) {
-        this.updateStatus('connecting', 'Connecting...');
-        this.isAuthenticated = false;
-
-        try {
-            this.ws = new WebSocket(url);
-            this.ws.onopen = () => {
-                this.isConnected = true;
-                this.reconnectAttempts = 0;
-                this.updateStatus('connected', 'Auth...');
-                this.p2pConn = null; // Clear P2P if WS connects
-            };
-            this.ws.onclose = () => {
-                this.isConnected = false;
-                this.isAuthenticated = false;
-                this.stopPing();
-                this.updateStatus('error', 'Disconnected');
-                // Only schedule reconnect if not intentionally P2P
-                if (!this.p2pConn) this.scheduleReconnect();
-            };
-            this.ws.onerror = () => this.updateStatus('error', 'Error');
-            this.ws.onmessage = e => this.handleMessage(e.data);
-        } catch { this.updateStatus('error', 'Failed'); this.scheduleReconnect(); }
+        // Always use P2P mode
+        console.log('Connecting via P2P...');
+        this.pendingPin = this.loginEl.pin ? this.loginEl.pin.value : '';
+        this.connectP2P(this.pendingPin);
     }
 
     // P2P Connection Logic
@@ -1062,6 +1108,9 @@ class RemoteInputApp {
             this.updateLoginStatus('PIN required for Internet Mode', 'error');
             return;
         }
+
+        // Show processing overlay immediately when P2P connection starts
+        this.showProcessingOverlay('Connecting to ' + (this.computerName || 'Device') + '...');
 
         this.updateLoginStatus('Initializing P2P...', 'connecting');
 
@@ -1117,15 +1166,20 @@ class RemoteInputApp {
                 console.log('[P2P] Connected!');
                 this.p2pConn = conn;
                 this.isConnected = true;
-                this.isAuthenticated = true; // P2P implies auth via PIN knowledge? Or we should send auth frame.
-                // Ideally we send an auth frame, but for now let's assume PIN knowledge = access since PeerID is derived from PIN.
+                this.isAuthenticated = true;
 
                 this.updateStatus('connected', 'Internet Connected');
                 this.updateLoginStatus('Connected via Internet!', 'success');
                 this.startPing();
 
-                // Auto-transition
-                setTimeout(() => this.showScreen('main'), 500);
+                // Save device for quick reconnect
+                this.saveDevice(pin, this.computerName);
+
+                // Show green success overlay
+                this.showSuccessOverlay('Connected to ' + (this.computerName || 'Device') + '!');
+
+                // Auto-transition after success overlay
+                setTimeout(() => this.showScreen('main'), 1000);
             });
 
             conn.on('data', (data) => {
@@ -1142,13 +1196,109 @@ class RemoteInputApp {
             conn.on('error', (err) => {
                 console.error('[P2P] Conn Error:', err);
                 this.updateLoginStatus('Connection Failed', 'error');
+                this.showErrorOverlay('Connection Failed');
             });
         });
 
         this.peer.on('error', (err) => {
             console.error('[P2P] Error:', err);
             this.updateLoginStatus('P2P Error: ' + err.type, 'error');
+            this.showErrorOverlay('P2P Error: ' + err.type);
         });
+    }
+
+    // Saved Devices Management (P2P Mode - restored from previous UI)
+    loadSavedDevices() {
+        try {
+            const saved = localStorage.getItem('savedDevices');
+            return saved ? JSON.parse(saved) : {};
+        } catch (e) {
+            console.error('Failed to load saved devices:', e);
+            return {};
+        }
+    }
+
+    saveSavedDevices(devices) {
+        try {
+            localStorage.setItem('savedDevices', JSON.stringify(devices));
+        } catch (e) {
+            console.error('Failed to save devices:', e);
+        }
+    }
+
+    saveDevice(pin, computerName) {
+        if (!pin || !computerName) return;
+
+        const key = `${computerName}-${pin}`;
+        this.savedDevices[key] = {
+            pin: pin,
+            computerName: computerName,
+            savedAt: Date.now()
+        };
+        this.saveSavedDevices(this.savedDevices);
+        console.log('Device saved:', key);
+    }
+
+    removeDevice(key) {
+        delete this.savedDevices[key];
+        this.saveSavedDevices(this.savedDevices);
+        this.renderSavedDevices();
+    }
+
+    renderSavedDevices() {
+        const savedKeys = Object.keys(this.savedDevices);
+
+        if (savedKeys.length === 0) {
+            // No saved devices - hide saved section
+            if (this.loginEl.savedConnections) this.loginEl.savedConnections.style.display = 'none';
+            return;
+        }
+
+        // Show saved connections
+        if (this.loginEl.savedConnections) this.loginEl.savedConnections.style.display = 'block';
+
+        // Render devices
+        if (this.loginEl.savedList) {
+            this.loginEl.savedList.innerHTML = savedKeys.map(key => {
+                const device = this.savedDevices[key];
+                return `
+                    <div class="saved-device" data-key="${key}">
+                        <span class="saved-device-icon">💻</span>
+                        <div class="saved-device-info">
+                            <div class="saved-device-name">${device.computerName || 'Unknown PC'}</div>
+                            <div class="saved-device-address">PIN: ${device.pin}</div>
+                        </div>
+                        <button class="saved-device-delete" data-key="${key}">×</button>
+                    </div>
+                `;
+            }).join('');
+
+            // Add click handlers
+            this.loginEl.savedList.querySelectorAll('.saved-device').forEach(el => {
+                el.onclick = (e) => {
+                    if (!e.target.classList.contains('saved-device-delete')) {
+                        this.connectFromSaved(el.dataset.key);
+                    }
+                };
+            });
+
+            // Delete handlers
+            this.loginEl.savedList.querySelectorAll('.saved-device-delete').forEach(btn => {
+                btn.onclick = (e) => {
+                    e.stopPropagation();
+                    this.removeDevice(btn.dataset.key);
+                };
+            });
+        }
+    }
+
+    connectFromSaved(key) {
+        const device = this.savedDevices[key];
+        if (device) {
+            this.computerName = device.computerName;
+            this.updateLoginStatus('Connecting...', 'connecting');
+            this.connectP2P(device.pin);
+        }
     }
 
     disconnect() {
@@ -1175,8 +1325,52 @@ class RemoteInputApp {
         if (this.el.connText) this.el.connText.textContent = t;
     }
 
-    startPing() { this.pingInt = setInterval(() => { if (this.isConnected) this.send({ type: 'ping', time: Date.now() }); }, 5000); }
-    stopPing() { if (this.pingInt) { clearInterval(this.pingInt); this.pingInt = null; } }
+    // Ping-Pong Heartbeat System
+    startPing() {
+        this.lastPongTime = Date.now();
+        this.missedPongs = 0;
+
+        // Send ping every 2 seconds
+        this.pingInt = setInterval(() => {
+            if (this.isConnected) {
+                this.send({ type: 'ping', time: Date.now() });
+
+                // Check if we've received a pong recently
+                const timeSinceLastPong = Date.now() - this.lastPongTime;
+                if (timeSinceLastPong > 6000) { // 6 seconds without pong
+                    console.warn('[Ping] Connection dead - no pong received');
+                    this.missedPongs++;
+
+                    if (this.missedPongs >= 2) {
+                        console.error('[Ping] Connection lost - disconnecting');
+                        this.handleConnectionLost();
+                    }
+                }
+            }
+        }, 2000);
+    }
+
+    stopPing() {
+        if (this.pingInt) {
+            clearInterval(this.pingInt);
+            this.pingInt = null;
+        }
+    }
+
+    handleConnectionLost() {
+        this.stopPing();
+        this.isConnected = false;
+        this.isAuthenticated = false;
+
+        if (this.p2pConn) {
+            this.p2pConn.close();
+            this.p2pConn = null;
+        }
+
+        this.updateStatus('error', 'Connection Lost');
+        this.showScreen('login');
+        this.renderSavedDevices();
+    }
 
     handleMessage(data) {
         // DOM queries for cursor indicator
@@ -1307,19 +1501,20 @@ class RemoteInputApp {
                 cursorIndicator.style.display = 'block';
             }
 
+            // Handle pong response
+            if (m.type === 'pong') {
+                console.log('[Ping] Received pong');
+                this.lastPongTime = Date.now();
+                this.missedPongs = 0;
+            }
+
         } catch { }
     }
 
     send(m) {
-        // P2P Priority
+        // P2P Only
         if (this.p2pConn && this.p2pConn.open) {
             this.p2pConn.send(m);
-            return true;
-        }
-        // WebSocket Fallback
-        if (this.isConnected && this.ws) {
-            m.id = ++this.messageId;
-            this.ws.send(JSON.stringify(m));
             return true;
         }
         return false;
