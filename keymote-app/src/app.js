@@ -101,6 +101,16 @@ class RemoteInputApp {
         this.setupListeners();
         this.setupLoginListeners();
 
+        // Disconnect Button
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        if (disconnectBtn) {
+            disconnectBtn.addEventListener('click', () => {
+                if (confirm('Disconnect from PC?')) {
+                    this.handleConnectionLost();
+                }
+            });
+        }
+
         // Check if running in Capacitor (native app) or browser
         const isCapacitor = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
 
@@ -110,9 +120,27 @@ class RemoteInputApp {
             return;
         }
 
-        // Start with splash screen, transition to login after configurable duration
-        const splashDuration = parseInt(localStorage.getItem('splashDuration') || '2500', 10);
+        // Start with splash screen
         this.showScreen('splash');
+
+        // Check for default device to bypass screens
+        const defaultDevice = localStorage.getItem('defaultDevice');
+
+        if (defaultDevice && this.savedDevices[defaultDevice]) {
+            console.log('Fast-tracking connection to default device:', defaultDevice);
+            // Render list in background just in case
+            this.renderSavedDevices();
+
+            // Connect immediately (bypassing splash delay and login screen)
+            // Use a tiny timeout to ensure DOM is ready and splash is rendered
+            setTimeout(() => {
+                this.connectFromSaved(defaultDevice, true);
+            }, 100);
+            return;
+        }
+
+        // Standard flow: Wait for splash duration then show login
+        const splashDuration = parseInt(localStorage.getItem('splashDuration') || '2500', 10);
         setTimeout(() => {
             this.showScreen('login');
             // Pre-populate login fields with saved values
@@ -456,19 +484,17 @@ class RemoteInputApp {
             const connectionData = JSON.parse(data);
             console.log('QR Connection data:', connectionData);
 
-            // Extract connection info (P2P only - just PIN and name)
+            // Extract connection info
             this.computerName = connectionData.name || '';
-            this.pendingPin = connectionData.pin || '';
-            this.pendingRememberMe = true;
+            const pin = connectionData.pin || '';
+            const hostId = connectionData.hostId || ''; // New field
 
-            // Save computer name
-            localStorage.setItem('computerName', this.computerName);
-
-            // P2P mode - connect using PIN
-            if (this.pendingPin) {
+            // P2P mode - connect
+            if (pin) {
                 console.log('QR has PIN, connecting via P2P...');
-                this.updateLoginStatus('Connecting via P2P...', 'connecting');
-                this.connectP2P(this.pendingPin);
+                // If we also have hostId, we could check if we already have a token, but for now just pair again
+                // to refresh the token.
+                this.connectP2P(pin, false); // False = Discovery/Pairing Mode
                 return;
             } else {
                 this.hideProcessingOverlay(); // Error case
@@ -1102,17 +1128,20 @@ class RemoteInputApp {
         this.connectP2P(this.pendingPin);
     }
 
-    // P2P Connection Logic
-    connectP2P(pin) {
-        if (!pin) {
-            this.updateLoginStatus('PIN required for Internet Mode', 'error');
+    // P2P Connection Logic - DUAL CHANNEL (Pairing + Secure)
+    connectP2P(pinOrHostId, isSecure = false, token = null, silent = false) {
+        if (!pinOrHostId) {
+            this.updateLoginStatus('Connection ID required', 'error');
             return;
         }
 
-        // Show processing overlay immediately when P2P connection starts
-        this.showProcessingOverlay('Connecting to ' + (this.computerName || 'Device') + '...');
+        const targetId = `keymote-${pinOrHostId}`;
+        console.log(`[P2P] Connecting to: ${targetId} (${isSecure ? 'Secure' : 'Discovery'})`);
 
-        this.updateLoginStatus('Initializing P2P...', 'connecting');
+        if (!silent) {
+            this.updateLoginStatus(isSecure ? 'Authenticating...' : 'Pairing...', 'connecting');
+            this.showProcessingOverlay(isSecure ? 'Verifying Security Token...' : 'Pairing with Device...');
+        }
 
         // Initialize Peer
         if (this.peer) this.peer.destroy();
@@ -1129,68 +1158,99 @@ class RemoteInputApp {
         this.peer.on('call', (call) => {
             console.log('[P2P] Incoming Video Call');
             call.answer(); // Answer automatically
-
             call.on('stream', (stream) => {
                 console.log('[P2P] Stream Received');
                 const video = document.getElementById('remoteVideo');
                 const img = document.getElementById('screenImage');
-
                 if (video) {
                     video.srcObject = stream;
                     video.style.display = 'block';
-                    if (img) img.style.display = 'none'; // Hide fallback
-
+                    if (img) img.style.display = 'none';
                     video.onloadedmetadata = () => {
                         video.play().catch(e => console.error('Play error:', e));
                         this.screenWidth = video.videoWidth;
                         this.screenHeight = video.videoHeight;
-                        if (this.el.statusText) this.el.statusText.textContent = `Video: ${video.videoWidth}x${video.videoHeight} (Stream)`;
                     };
                 }
             });
-
-            call.on('error', (err) => console.error('[P2P] Call error:', err));
         });
 
         this.peer.on('open', (id) => {
             console.log('[P2P] My Peer ID:', id);
-            this.updateLoginStatus('Contacting PC...', 'connecting');
-
-            // Connect to PC peer: keymote-<PIN>
-            const targetId = `keymote-${pin}`;
-            console.log('[P2P] Connecting to:', targetId);
-
             const conn = this.peer.connect(targetId);
 
             conn.on('open', () => {
-                console.log('[P2P] Connected!');
+                console.log('[P2P] Data Channel Open');
                 this.p2pConn = conn;
-                this.isConnected = true;
-                this.isAuthenticated = true;
 
-                this.updateStatus('connected', 'Internet Connected');
-                this.updateLoginStatus('Connected via Internet!', 'success');
-                this.startPing();
-
-                // Save device for quick reconnect
-                this.saveDevice(pin, this.computerName);
-
-                // Show green success overlay
-                this.showSuccessOverlay('Connected to ' + (this.computerName || 'Device') + '!');
-
-                // Auto-transition after success overlay
-                setTimeout(() => this.showScreen('main'), 1000);
+                if (isSecure) {
+                    // --- SECURE AUTH FLOW ---
+                    console.log('[P2P] Sending Auth Token...');
+                    conn.send({
+                        type: 'auth',
+                        deviceId: this.deviceId,
+                        token: token,
+                        deviceName: 'Mobile Client' // TODO: Get real name if possible
+                    });
+                } else {
+                    // --- PAIRING FLOW ---
+                    console.log('[P2P] Sending Pairing Request...');
+                    conn.send({
+                        type: 'pair-request',
+                        deviceId: this.deviceId,
+                        deviceName: 'Mobile Client'
+                    });
+                }
             });
 
             conn.on('data', (data) => {
-                this.handleMessage(data); // P2P Data is usually objects, WS is strings.
+                // Handle Handshake Responses
+                if (data.type === 'pair-success') {
+                    console.log('[P2P] Pairing Successful! Token received.');
+                    // Save credentials
+                    this.saveDevice(data.hostId, this.computerName, data.token);
+
+                    // Disconnect Discovery Peer
+                    conn.close();
+
+                    // Reconnect using Secure Channel
+                    setTimeout(() => {
+                        this.connectP2P(data.hostId, true, data.token, silent);
+                    }, 500);
+                    return;
+                }
+
+                if (data.type === 'auth-result') {
+                    if (data.success) {
+                        console.log('[P2P] Auth Successful!');
+                        this.isConnected = true;
+                        this.isAuthenticated = true;
+
+                        this.updateStatus('connected', 'Connected (Secure)');
+                        if (!silent) {
+                            this.updateLoginStatus('Connected securely!', 'success');
+                            this.showSuccessOverlay('Connected!');
+                        }
+
+                        this.startPing();
+                        setTimeout(() => this.showScreen('main'), 500);
+                    } else {
+                        console.error('[P2P] Auth Failed:', data.error);
+                        this.updateLoginStatus('Auth Failed: ' + data.error, 'error');
+                        this.showErrorOverlay('Auth Failed');
+                        // If token invalid, maybe delete saved device?
+                    }
+                    return;
+                }
+
+                this.handleMessage(data);
             });
 
             conn.on('close', () => {
                 console.log('[P2P] Closed');
                 this.isConnected = false;
-                this.p2pConn = null;
                 this.updateStatus('error', 'Disconnected');
+                if (this.isAuthenticated) this.handleConnectionLost(); // Only if we were fully connected
             });
 
             conn.on('error', (err) => {
@@ -1203,7 +1263,7 @@ class RemoteInputApp {
         this.peer.on('error', (err) => {
             console.error('[P2P] Error:', err);
             this.updateLoginStatus('P2P Error: ' + err.type, 'error');
-            this.showErrorOverlay('P2P Error: ' + err.type);
+            this.showErrorOverlay('Error: ' + err.type);
         });
     }
 
@@ -1218,72 +1278,108 @@ class RemoteInputApp {
         }
     }
 
-    saveSavedDevices(devices) {
+    saveSavedDevices() {
         try {
-            localStorage.setItem('savedDevices', JSON.stringify(devices));
+            localStorage.setItem('savedDevices', JSON.stringify(this.savedDevices));
+            this.renderSavedDevices();
         } catch (e) {
             console.error('Failed to save devices:', e);
         }
     }
 
-    saveDevice(pin, computerName) {
-        if (!pin || !computerName) return;
+    saveDevice(hostId, computerName, token) {
+        if (!hostId || !token) return;
 
-        const key = `${computerName}-${pin}`;
-        this.savedDevices[key] = {
-            pin: pin,
+        // Use hostId as key for uniqueness
+        this.savedDevices[hostId] = {
+            hostId: hostId,
             computerName: computerName,
+            token: token, // Secure Token
             savedAt: Date.now()
         };
-        this.saveSavedDevices(this.savedDevices);
-        console.log('Device saved:', key);
+        this.saveSavedDevices();
+        console.log('Device saved securely:', hostId);
+    }
+
+    setDefaultDevice(key) {
+        localStorage.setItem('defaultDevice', key);
+        this.renderSavedDevices();
     }
 
     removeDevice(key) {
         delete this.savedDevices[key];
-        this.saveSavedDevices(this.savedDevices);
-        this.renderSavedDevices();
+        // If default was removed, clear it
+        if (localStorage.getItem('defaultDevice') === key) {
+            localStorage.removeItem('defaultDevice');
+        }
+        this.saveSavedDevices();
     }
 
     renderSavedDevices() {
         const savedKeys = Object.keys(this.savedDevices);
+        const defaultDevice = localStorage.getItem('defaultDevice');
 
         if (savedKeys.length === 0) {
-            // No saved devices - hide saved section
             if (this.loginEl.savedConnections) this.loginEl.savedConnections.style.display = 'none';
             return;
         }
 
-        // Show saved connections
         if (this.loginEl.savedConnections) this.loginEl.savedConnections.style.display = 'block';
 
-        // Render devices
         if (this.loginEl.savedList) {
             this.loginEl.savedList.innerHTML = savedKeys.map(key => {
                 const device = this.savedDevices[key];
+                const isDefault = defaultDevice === key;
                 return `
-                    <div class="saved-device" data-key="${key}">
-                        <span class="saved-device-icon">💻</span>
-                        <div class="saved-device-info">
-                            <div class="saved-device-name">${device.computerName || 'Unknown PC'}</div>
-                            <div class="saved-device-address">PIN: ${device.pin}</div>
+                    <div class="saved-card" data-key="${key}">
+                        <div class="card-left">
+                            <div class="device-icon-box">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                                    <line x1="8" y1="21" x2="16" y2="21"></line>
+                                    <line x1="12" y1="17" x2="12" y2="21"></line>
+                                </svg>
+                            </div>
+                            <div class="device-info">
+                                <div class="device-name">${device.computerName || 'Unknown PC'}</div>
+                                <div class="device-status">
+                                    <span class="status-dot">●</span> Secure Connection
+                                </div>
+                            </div>
                         </div>
-                        <button class="saved-device-delete" data-key="${key}">×</button>
+                        <div class="card-actions">
+                            <button class="action-btn star-btn ${isDefault ? 'active' : ''}" data-key="${key}" title="${isDefault ? 'Default Device' : 'Set as Default'}">
+                                ${isDefault ? '★' : '☆'}
+                            </button>
+                            <button class="action-btn trash-btn" data-key="${key}" title="Remove">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="3 6 5 6 21 6"></polyline>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                </svg>
+                            </button>
+                        </div>
                     </div>
                 `;
             }).join('');
 
-            // Add click handlers
-            this.loginEl.savedList.querySelectorAll('.saved-device').forEach(el => {
+            // Click Handler: Main Card (Connect)
+            this.loginEl.savedList.querySelectorAll('.saved-card').forEach(el => {
                 el.onclick = (e) => {
-                    if (!e.target.classList.contains('saved-device-delete')) {
-                        this.connectFromSaved(el.dataset.key);
-                    }
+                    // Ignore clicks on action buttons
+                    if (e.target.closest('.action-btn')) return;
+                    this.connectFromSaved(el.dataset.key);
                 };
             });
 
-            // Delete handlers
-            this.loginEl.savedList.querySelectorAll('.saved-device-delete').forEach(btn => {
+            // Action Handlers
+            this.loginEl.savedList.querySelectorAll('.star-btn').forEach(btn => {
+                btn.onclick = (e) => {
+                    e.stopPropagation();
+                    this.setDefaultDevice(btn.dataset.key);
+                };
+            });
+
+            this.loginEl.savedList.querySelectorAll('.trash-btn').forEach(btn => {
                 btn.onclick = (e) => {
                     e.stopPropagation();
                     this.removeDevice(btn.dataset.key);
@@ -1292,12 +1388,13 @@ class RemoteInputApp {
         }
     }
 
-    connectFromSaved(key) {
+    connectFromSaved(key, silent = false) {
         const device = this.savedDevices[key];
         if (device) {
             this.computerName = device.computerName;
-            this.updateLoginStatus('Connecting...', 'connecting');
-            this.connectP2P(device.pin);
+            if (!silent) this.updateLoginStatus('Connecting securely...', 'connecting');
+            // Connect using Secure Channel (HostID + Token)
+            this.connectP2P(device.hostId, true, device.token, silent);
         }
     }
 
@@ -1326,18 +1423,23 @@ class RemoteInputApp {
     }
 
     // Ping-Pong Heartbeat System
+    // Ping-Pong Heartbeat System
     startPing() {
+        if (this.pingInt) clearInterval(this.pingInt);
         this.lastPongTime = Date.now();
         this.missedPongs = 0;
 
         // Send ping every 2 seconds
         this.pingInt = setInterval(() => {
-            if (this.isConnected) {
-                this.send({ type: 'ping', time: Date.now() });
+            if (this.isConnected && this.isAuthenticated) {
+                // Determine connection to use
+                if (this.p2pConn && this.p2pConn.open) {
+                    this.p2pConn.send({ type: 'ping', time: Date.now() });
+                }
 
                 // Check if we've received a pong recently
                 const timeSinceLastPong = Date.now() - this.lastPongTime;
-                if (timeSinceLastPong > 6000) { // 6 seconds without pong
+                if (timeSinceLastPong > 8000) { // 8 seconds without pong (generous)
                     console.warn('[Ping] Connection dead - no pong received');
                     this.missedPongs++;
 
@@ -1348,6 +1450,7 @@ class RemoteInputApp {
                 }
             }
         }, 2000);
+        console.log('[Ping] Started P2P heartbeat service');
     }
 
     stopPing() {
@@ -1367,6 +1470,12 @@ class RemoteInputApp {
             this.p2pConn = null;
         }
 
+        // Destroy peer to release the ID/port
+        if (this.peer) {
+            this.peer.destroy();
+            this.peer = null;
+        }
+
         this.updateStatus('error', 'Connection Lost');
         this.showScreen('login');
         this.renderSavedDevices();
@@ -1380,6 +1489,12 @@ class RemoteInputApp {
         try {
             // Handle both P2P objects (raw) and WebSocket strings (JSON)
             const m = (typeof data === 'string') ? JSON.parse(data) : data;
+
+            // Respond to incoming Pings (Heartbeat from Desktop)
+            if (m.type === 'ping') {
+                this.send({ type: 'pong', time: Date.now() });
+                return;
+            }
 
             // Handle server connection response
             if (m.type === 'connected') {
@@ -1639,10 +1754,11 @@ class RemoteInputApp {
     }
 
     applyScreenTransform() {
-        if (this.el.screenImage) {
+        const video = document.getElementById('remoteVideo');
+        if (video) {
             const scale = this.screenZoom / 100;
-            this.el.screenImage.style.transform = `translate(${this.screenOffsetX}px, ${this.screenOffsetY}px) scale(${scale})`;
-            this.el.screenImage.style.transformOrigin = 'center center';
+            video.style.transform = `translate(${this.screenOffsetX}px, ${this.screenOffsetY}px) scale(${scale})`;
+            video.style.transformOrigin = 'center center';
         }
     }
 }

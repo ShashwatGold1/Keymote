@@ -28,7 +28,8 @@ const el = {
 
 // Store server info for reconnection
 let lastServerInfo = null;
-let peer = null;
+let peerDiscovery = null; // PIN-based (Discovery)
+let peerSecure = null;    // Token-based (Persistent)
 
 // Log Forwarding (Debug)
 const originalLog = console.log;
@@ -76,7 +77,27 @@ function toggleTheme() {
     applyTheme(newTheme);
 }
 
-// Status
+// Status Updates
+function updateGlobalStatus() {
+    const secureCount = getSecureClientCount();
+
+    if (secureCount > 0) {
+        updateStatus('Connected', `${secureCount} device(s)`);
+        el.qrSection.style.display = 'none';
+
+        // Update badge with first device name
+        const firstConn = getFirstSecureConnection();
+        if (firstConn && firstConn.deviceName) {
+            el.deviceName.textContent = firstConn.deviceName;
+            el.deviceBadge.style.display = 'inline-flex';
+        }
+    } else {
+        updateStatus('Waiting', 'Scan QR code to connect');
+        el.qrSection.style.display = 'block';
+        el.deviceBadge.style.display = 'none';
+    }
+}
+
 function updateStatus(status, detail) {
     el.statusText.textContent = status;
     el.statusDetail.textContent = detail;
@@ -85,7 +106,14 @@ function updateStatus(status, detail) {
             status.includes('Error') ? ' status-error' : '');
 }
 
-// Server info
+// Check library availability
+function checkPeerJS() {
+    if (typeof Peer === 'undefined') {
+        throw new Error('PeerJS library not loaded. Check Internet connection.');
+    }
+}
+
+// Server info display
 function displayServerInfo(info) {
     if (!info) {
         updateStatus('Error', 'Failed to start server');
@@ -96,8 +124,6 @@ function displayServerInfo(info) {
         el.qrCode.style.display = 'block';
         el.qrPlaceholder.style.display = 'none';
     }
-    el.connectionUrl.textContent = info.url;
-    el.connectionUrl.href = info.url;
 
     // Display PIN and Computer Name
     if (info.pin && info.computerName) {
@@ -106,207 +132,237 @@ function displayServerInfo(info) {
         el.pinSection.style.display = 'block';
     }
 
-    updateStatus('Waiting', `Server on ${info.ip}:${info.port}`);
+    updateStatus('Waiting', `Ready to pair`);
 
     // Ensure PeerJS is initialized
-    initPeerJS(info);
+    initDualPeers(info);
 }
 
-// Connection change
-function handleConnectionChange(info) {
-    if (info.connected) {
-        updateStatus('Connected', `${info.clientCount} device(s)`);
-        el.qrSection.style.display = 'none';
-        if (info.clients?.length > 0) {
-            el.deviceName.textContent = info.clients[0].id.slice(0, 6);
-            el.deviceBadge.style.display = 'inline-flex';
-        }
-    } else {
-        updateStatus('Waiting', 'Scan QR code to connect');
-        el.qrSection.style.display = 'block';
-        el.deviceBadge.style.display = 'none';
-    }
-}
+// --- DUAL PEER LOGIC ---
 
-// PeerJS Logic
-function initPeerJS(info) {
-    if (!info || !info.pin) return;
-
-    // Store info for reconnection
+function initDualPeers(info) {
+    if (!info || !info.pin || !info.hostId) return;
     lastServerInfo = info;
 
-    // Create peer with ID based on PIN
-    const peerId = `keymote-${info.pin}`;
+    checkPeerJS();
 
-    console.log('[PeerJS] Initializing with ID:', peerId);
+    // 1. Discovery Peer (PIN) - Ephemeral
+    initDiscoveryPeer(info.pin);
 
-    if (peer) peer.destroy();
+    // 2. Secure Peer (HostID) - Persistent
+    initSecurePeer(info.hostId);
+}
 
-    try {
-        if (typeof Peer === 'undefined') {
-            throw new Error('PeerJS library not loaded. Check Internet connection.');
+// Peer Configuration
+const peerConfig = {
+    debug: 1,
+    config: {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
+        ]
+    }
+};
+
+// --- 1. DISCOVERY PEER (PIN) ---
+function initDiscoveryPeer(pin) {
+    if (peerDiscovery) peerDiscovery.destroy();
+
+    const peerId = `keymote-${pin}`;
+    console.log('[Discovery] Initializing:', peerId);
+
+    peerDiscovery = new Peer(peerId, peerConfig);
+
+    peerDiscovery.on('open', (id) => {
+        console.log('[Discovery] Ready:', id);
+    });
+
+    peerDiscovery.on('connection', (conn) => {
+        console.log('[Discovery] Incoming pairing request...');
+
+        conn.on('data', async (data) => {
+            if (data && data.type === 'pair-request') {
+                console.log('[Discovery] Pairing Request from:', data.deviceName);
+
+                // Generate Token via Main Process
+                const token = await window.electronAPI.generateToken({
+                    deviceId: data.deviceId,
+                    deviceName: data.deviceName
+                });
+
+                // Send Credentials back to client
+                conn.send({
+                    type: 'pair-success',
+                    token: token,
+                    hostId: lastServerInfo.hostId
+                });
+
+                console.log('[Discovery] Pairing successful. Token sent.');
+
+                // Close discovery connection (client should reconnect to Secure Peer)
+                setTimeout(() => conn.close(), 1000);
+            }
+        });
+    });
+
+    peerDiscovery.on('error', (err) => {
+        console.error('[Discovery] Error:', err);
+        // Retry logic if ID is taken (rare for random PIN)
+        if (err.type === 'unavailable-id') {
+            setTimeout(() => initDiscoveryPeer(pin), 3000);
+        }
+    });
+}
+
+
+function startHeartbeat(conn) {
+    if (conn.heartbeatInfo) clearInterval(conn.heartbeatInfo);
+
+    conn.lastPong = Date.now();
+    conn.heartbeatInfo = setInterval(() => {
+        // Check if connection is dead (no pong for 10s)
+        if (Date.now() - conn.lastPong > 10000) {
+            console.error(`[Secure] Connection dead: ${conn.deviceName}`);
+            conn.close();
+            clearInterval(conn.heartbeatInfo);
+            return;
         }
 
-        peer = new Peer(peerId, {
-            debug: 2,
-            config: {
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:global.stun.twilio.com:3478' },
-                    { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:stun2.l.google.com:19302' },
-                    { urls: 'stun:stun3.l.google.com:19302' },
-                    { urls: 'stun:stun4.l.google.com:19302' }
-                ]
+        // Send Ping
+        if (conn.open) {
+            conn.send({ type: 'ping' });
+        }
+    }, 5000);
+
+    // Clean up on close
+    conn.on('close', () => {
+        if (conn.heartbeatInfo) clearInterval(conn.heartbeatInfo);
+    });
+}
+
+// --- 2. SECURE PEER (UUID) ---
+function initSecurePeer(hostId) {
+    if (peerSecure) peerSecure.destroy();
+
+    const peerId = `keymote-${hostId}`;
+    console.log('[Secure] Initializing:', peerId);
+
+    peerSecure = new Peer(peerId, peerConfig);
+
+    peerSecure.on('open', (id) => {
+        console.log('[Secure] Ready:', id);
+        // Show "Internet Ready" badge
+        const publicBadge = document.createElement('span');
+        publicBadge.className = 'status-detail';
+        publicBadge.style.color = '#4CAF50';
+        publicBadge.textContent = ' 🌐 Internet Ready';
+        if (el.pinSection && !el.pinSection.innerText.includes('Internet Ready')) {
+            el.pinSection.appendChild(publicBadge);
+        }
+    });
+
+    peerSecure.on('connection', (conn) => {
+        console.log('[Secure] Incoming connection from:', conn.peer);
+        conn.isAuthenticated = false; // Default to blocked
+
+        conn.on('data', async (data) => {
+            // Heartbeat (Ping/Pong) - Handle both sides
+            if (data && data.type === 'ping') {
+                conn.send({ type: 'pong', time: Date.now() });
+                return;
+            }
+            if (data && data.type === 'pong') {
+                conn.lastPong = Date.now(); // Track pong receipt
+                return;
+            }
+
+            // Auth Handshake
+            if (data && data.type === 'auth') {
+                const isValid = await window.electronAPI.validateToken({
+                    deviceId: data.deviceId,
+                    token: data.token
+                });
+
+                if (isValid) {
+                    conn.isAuthenticated = true;
+                    conn.deviceName = data.deviceName || 'Unknown';
+                    console.log(`[Secure] Authenticated: ${conn.deviceName}`);
+                    conn.send({ type: 'auth-result', success: true });
+                    updateGlobalStatus();
+
+                    // Start Heartbeat Monitor for this connection
+                    startHeartbeat(conn);
+                } else {
+                    console.warn('[Secure] Auth Failed for:', data.deviceId);
+                    conn.send({ type: 'auth-result', success: false, error: 'Invalid Token' });
+                    setTimeout(() => conn.close(), 500);
+                }
+                return;
+            }
+
+            // If not authenticated, ignore everything else
+            if (!conn.isAuthenticated) return;
+
+            // --- Authenticated Logic Below ---
+
+            // Screen Share Request
+            if (data && (data.type === 'screen' || data.type === 'screen-req') && data.action === 'start') {
+                startScreenShare(conn.peer);
+            }
+
+            // Input Handling
+            if (window.electronAPI.sendRemoteInput) {
+                window.electronAPI.sendRemoteInput(data);
             }
         });
 
-        peer.on('open', (id) => {
-            console.log('[PeerJS] P2P Ready. ID:', id);
-            const publicBadge = document.createElement('span');
-            publicBadge.className = 'status-detail';
-            publicBadge.style.color = '#4CAF50';
-            publicBadge.textContent = ' 🌐 Internet Ready';
-            // Only append if not already there
-            if (el.pinSection && !el.pinSection.innerText.includes('Internet Ready')) {
-                el.pinSection.appendChild(publicBadge);
-            }
-
-            // Ensure QR is visible when peer is ready but not connected
-            ensureQRVisible();
+        conn.on('close', () => {
+            console.log('[Secure] Connection closed');
+            updateGlobalStatus();
         });
 
-        peer.on('connection', (conn) => {
-            console.log('[PeerJS] Incoming connection from:', conn.peer);
+        conn.on('error', (err) => console.error('[Secure] Conn Error:', err));
+    });
 
-            // Bidirectional heartbeat monitoring
-            let lastPingTime = Date.now();
-            let heartbeatMonitor = null;
+    peerSecure.on('error', (err) => {
+        console.error('[Secure] Error:', err);
+        if (err.type === 'network' || err.type === 'server-error' || err.message.includes('Lost connection')) {
+            setTimeout(() => initSecurePeer(hostId), 3000);
+        }
+    });
+}
 
-            conn.on('data', (data) => {
-                // console.log('[PeerJS] Received Data:', data ? data.type : 'raw'); // Silenced for performance
+// Helpers for Status
+function getSecureClientCount() {
+    if (!peerSecure || !peerSecure.connections) return 0;
+    const conns = Object.values(peerSecure.connections).flat();
+    return conns.filter(c => c.open && c.isAuthenticated).length;
+}
 
-                // Handle ping - respond with pong AND track ping time
-                if (data && data.type === 'ping') {
-                    console.log('[Renderer] Received ping, sending pong');
-                    lastPingTime = Date.now(); // Track last ping time
-                    conn.send({ type: 'pong', time: Date.now() });
-                    return;
-                }
+function getFirstSecureConnection() {
+    if (!peerSecure || !peerSecure.connections) return null;
+    const conns = Object.values(peerSecure.connections).flat();
+    return conns.find(c => c.open && c.isAuthenticated);
+}
 
-                // Handle Screen Share Request locally (Native Stream)
-                if (data && (data.type === 'screen' || data.type === 'screen-req') && data.action === 'start') {
-                    console.log('[Renderer] Starting Native Screen Share to:', conn.peer);
-                    startScreenShare(conn.peer);
-                    // allow propagation to main.js for cursor polling
-                }
-
-                if (window.electronAPI.sendRemoteInput) {
-                    window.electronAPI.sendRemoteInput(data);
-                }
-            });
-
-            conn.on('open', () => {
-                console.log('[PeerJS] Data Channel OPEN! Connection Successful.');
-                updateStatus('Connected (P2P)', 'Device connected via Internet');
-                if (el.qrSection) el.qrSection.style.display = 'none';
-
-                // Start bidirectional heartbeat monitor
-                console.log('[Renderer] Starting heartbeat monitor');
-                lastPingTime = Date.now();
-                heartbeatMonitor = setInterval(() => {
-                    const timeSinceLastPing = Date.now() - lastPingTime;
-                    console.log(`[Renderer] Time since last ping: ${timeSinceLastPing}ms`);
-
-                    if (timeSinceLastPing > 6000) {
-                        console.error('[Renderer] Connection dead - no ping for 6+ seconds');
-                        clearInterval(heartbeatMonitor);
-                        heartbeatMonitor = null;
-
-                        // Clean up and show QR
-                        if (conn && conn.open) {
-                            conn.close();
-                        }
-                        ensureQRVisible();
-                        handleConnectionChange({ connected: false });
-                    }
-                }, 3000);
-            });
-
-            conn.on('close', () => {
-                console.log('[PeerJS] Connection closed');
-
-                // Stop heartbeat monitor
-                if (heartbeatMonitor) {
-                    clearInterval(heartbeatMonitor);
-                    heartbeatMonitor = null;
-                }
-
-                handleConnectionChange({ connected: false });
-                // Ensure QR is visible when connection closes
-                ensureQRVisible();
-            });
-
-            conn.on('error', (err) => {
-                console.error('[PeerJS] Connection Error:', err);
-            });
-        });
-
-        peer.on('error', (err) => {
-            console.error('[PeerJS] Error:', err);
-
-            // Auto-reconnect on "Lost connection to server" error
-            if (err.type === 'network' || err.type === 'server-error' || err.message.includes('Lost connection')) {
-                console.log('[PeerJS] Connection lost. Destroying peer and reconnecting in 3 seconds...');
-
-                // Properly destroy the peer first
-                if (peer) {
-                    try {
-                        peer.destroy();
-                        peer = null;
-                    } catch (e) {
-                        console.error('[PeerJS] Error destroying peer:', e);
-                    }
-                }
-
-                // Wait 3 seconds for server to release the ID
-                setTimeout(() => {
-                    if (lastServerInfo) {
-                        console.log('[PeerJS] Attempting reconnect...');
-                        initPeerJS(lastServerInfo);
-                    }
-                }, 3000);
-            } else if (err.type === 'unavailable-id') {
-                // ID still taken, wait longer
-                console.log('[PeerJS] ID still taken. Waiting 5 more seconds...');
-                setTimeout(() => {
-                    if (lastServerInfo) {
-                        initPeerJS(lastServerInfo);
-                    }
-                }, 5000);
-            }
-        });
-
-    } catch (e) {
-        console.error('[PeerJS] Failed to initialize:', e.message);
-        updateStatus('Error', 'Internet component failed');
-    }
+// Helper to broadcast to Authenticated Clients only
+function broadcastToAuthenticated(data) {
+    if (!peerSecure || !peerSecure.connections) return;
+    const connections = Object.values(peerSecure.connections).flat();
+    connections.forEach(conn => {
+        if (conn.open && conn.isAuthenticated) {
+            conn.send(data);
+        }
+    });
 }
 
 // Native WebRTC Screen Sharing
 async function startScreenShare(recipientPeerId) {
     try {
-        console.log('[Renderer] Getting screen sources...');
         const sources = await window.electronAPI.getSources();
-        if (!sources || sources.length === 0) {
-            console.error('[Renderer] No screen sources found');
-            return;
-        }
+        if (!sources || sources.length === 0) return;
 
-        // Select primary screen (usually the first one or named 'Entire Screen')
         const source = sources[0];
-        console.log('[Renderer] Selected Source:', source.name, source.id);
-
         const stream = await navigator.mediaDevices.getUserMedia({
             audio: false,
             video: {
@@ -321,33 +377,27 @@ async function startScreenShare(recipientPeerId) {
             }
         });
 
-        console.log('[Renderer] Stream obtained. Calling peer:', recipientPeerId);
-        const call = peer.call(recipientPeerId, stream);
+        // Call the specific peer instance that requested it
+        // Note: PeerJS handles calling by ID. Since we have two peer instances, make sure we use the right one.
+        // Screen share requests come to 'peerSecure' usually.
+        const call = peerSecure.call(recipientPeerId, stream);
+
+        if (window.electronAPI.sendCursorControl) {
+            window.electronAPI.sendCursorControl('start');
+        }
 
         call.on('close', () => {
-            console.log('[Renderer] Call ended');
             stream.getTracks().forEach(t => t.stop());
+            if (window.electronAPI.sendCursorControl) {
+                window.electronAPI.sendCursorControl('stop');
+            }
         });
-
-        call.on('error', (err) => {
-            console.error('[Renderer] Call Error:', err);
-        });
-
     } catch (err) {
         console.error('[Renderer] Screen Share Failed:', err);
     }
 }
 
-// Helper to broadcast generic data (e.g. cursor) to all peers
-function broadcastData(data) {
-    if (!peer || !peer.connections) return;
-    const connections = Object.values(peer.connections).flat();
-    connections.forEach(conn => {
-        if (conn.open) conn.send(data);
-    });
-}
-
-// Init
+// Initialization and Event Wiring
 async function init() {
     await initTheme();
 
@@ -363,34 +413,23 @@ async function init() {
         });
     }
 
+    // Bridge Events
     window.electronAPI.onServerReady(displayServerInfo);
-    window.electronAPI.onConnectionChange(handleConnectionChange);
     window.electronAPI.onThemeChanged(applyTheme);
 
-    // Bridge Cursor Updates from Main -> P2P
+    // Bridge Cursor Updates
     if (window.electronAPI && window.electronAPI.onP2PScreenFrame) {
         window.electronAPI.onP2PScreenFrame((data) => {
-            broadcastData(data);
+            broadcastToAuthenticated(data);
         });
     }
 
+    // Request initial server info
     const serverInfo = await window.electronAPI.getServerInfo();
     if (serverInfo) displayServerInfo(serverInfo);
 
-    const connStatus = await window.electronAPI.getConnectionStatus();
-    handleConnectionChange(connStatus);
-
-    // Try init peerjs here too in case serverinfo is already ready
-    if (serverInfo) initPeerJS(serverInfo);
-}
-
-// Helper function to ensure QR code is visible when not connected
-function ensureQRVisible() {
-    if (el.qrSection) {
-        el.qrSection.style.display = 'block';
-        console.log('[Renderer] QR section set to visible');
-    }
-    updateStatus('Waiting', 'Scan QR code to connect');
+    // Set initial status
+    updateGlobalStatus();
 }
 
 document.addEventListener('DOMContentLoaded', init);

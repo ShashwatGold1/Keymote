@@ -20,6 +20,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Remote Input (P2P)
     sendRemoteInput: (data) => ipcRenderer.send('remote-input', data),
 
+    // Cursor Tracking Control
+    sendCursorControl: (action) => ipcRenderer.send('cursor-control', { action }),
+
+    // Auth Token Management
+    generateToken: (data) => ipcRenderer.invoke('generate-token', data),
+    validateToken: (data) => ipcRenderer.invoke('validate-token', data),
+
     // Event listeners
     onServerReady: (callback) => {
         ipcRenderer.on('server-ready', (event, info) => callback(info));
@@ -43,6 +50,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
 
     // Logging (Renderer -> Terminal)
-    log: (type, message) => ipcRenderer.send('renderer-log', { type, message })
+    log: (type, message) => ipcRenderer.send('renderer-log', { type, message }),
+
+    // Cursor position updates
+    onCursorUpdate: (callback) => {
+        ipcRenderer.on('cursor-update', (event, data) => callback(data));
+    }
 });
 

@@ -176,6 +176,8 @@
                 <span class="brand-name">Keymote</span>
             </div>
             <div class="header-buttons">
+                <button id="disconnectBtn" class="header-btn" title="Disconnect"
+                    style="background: rgba(239, 68, 68, 0.2); color: #ef4444;">✕</button>
                 <button id="settingsBtn" class="header-btn settings-btn">⚙️</button>
                 <button id="themeBtn" class="header-btn theme-btn">🌙</button>
                 <button id="connectionBtn" class="header-btn connection-btn">
@@ -407,28 +409,6 @@
         </div>
 
         <div class="settings-page-content">
-            <!-- Connection Section -->
-            <div class="settings-section">
-                <h3 class="settings-section-title">Connection</h3>
-                <div class="settings-card">
-                    <div class="settings-item">
-                        <label for="serverAddress">Server Address</label>
-                        <input type="text" id="serverAddress" placeholder="e.g., 192.168.1.100:8765">
-                        <small>Leave empty for auto-detect</small>
-                    </div>
-                    <div class="settings-item">
-                        <label for="computerNameInput">Computer Name</label>
-                        <input type="text" id="computerNameInput" placeholder="e.g., DESKTOP-ABC">
-                    </div>
-                    <div class="settings-item">
-                        <label for="pinInput">PIN</label>
-                        <input type="text" id="pinInput" placeholder="6-digit PIN" maxlength="6" pattern="[0-9]*"
-                            inputmode="numeric">
-                    </div>
-                    <button id="saveSettingsBtn" class="settings-connect-btn">Save & Connect</button>
-                    <div id="authStatus" class="settings-status"></div>
-                </div>
-            </div>
 
             <!-- App Settings Section -->
             <div class="settings-section">

@@ -44,11 +44,14 @@ const COMPUTER_NAME = os.hostname();
 // Token storage for persistent authentication
 class TokenStorage {
     constructor() {
-        this.tokensFile = path.join(app.getPath('userData'), 'device-tokens.json');
-        this.tokens = this.loadTokens();
+        this.userDataPath = app.getPath('userData');
+        this.tokensFile = path.join(this.userDataPath, 'device-tokens.json');
+        this.configPath = path.join(this.userDataPath, 'config.json');
+        this.data = this.loadData();
+        this.config = this.loadConfig();
     }
 
-    loadTokens() {
+    loadData() {
         try {
             if (fs.existsSync(this.tokensFile)) {
                 return JSON.parse(fs.readFileSync(this.tokensFile, 'utf8'));
@@ -59,26 +62,73 @@ class TokenStorage {
         return {};
     }
 
-    saveTokens() {
+    loadConfig() {
         try {
-            fs.writeFileSync(this.tokensFile, JSON.stringify(this.tokens, null, 2));
+            if (fs.existsSync(this.configPath)) {
+                return JSON.parse(fs.readFileSync(this.configPath, 'utf8'));
+            }
+        } catch (e) {
+            console.warn('[TokenStorage] Failed to load config:', e.message);
+        }
+        return { hostId: null }; // Default
+    }
+
+    saveData() {
+        try {
+            fs.writeFileSync(this.tokensFile, JSON.stringify(this.data, null, 2));
         } catch (e) {
             console.error('[TokenStorage] Failed to save tokens:', e.message);
         }
     }
 
-    saveToken(deviceId, token) {
-        this.tokens[deviceId] = { token, created: Date.now() };
-        this.saveTokens();
+    saveConfig() {
+        try {
+            fs.writeFileSync(this.configPath, JSON.stringify(this.config, null, 2));
+        } catch (e) {
+            console.error('[TokenStorage] Failed to save config:', e.message);
+        }
+    }
+
+    // --- Token Methods ---
+
+    saveToken(deviceId, token, deviceName) {
+        this.data[deviceId] = {
+            token,
+            name: deviceName || 'Unknown Device',
+            created: Date.now(),
+            lastUsed: Date.now()
+        };
+        this.saveData();
     }
 
     getToken(deviceId) {
-        return this.tokens[deviceId]?.token;
+        return this.data[deviceId]?.token;
+    }
+
+    validateToken(deviceId, token) {
+        const entry = this.data[deviceId];
+        if (entry && entry.token === token) {
+            entry.lastUsed = Date.now();
+            this.saveData();
+            return true;
+        }
+        return false;
     }
 
     removeToken(deviceId) {
-        delete this.tokens[deviceId];
-        this.saveTokens();
+        delete this.data[deviceId];
+        this.saveData();
+    }
+
+    // --- Host Identity Methods ---
+
+    getHostId() {
+        if (!this.config.hostId) {
+            // Generate a permanent UUID for this machine
+            this.config.hostId = 'host_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 9);
+            this.saveConfig();
+        }
+        return this.config.hostId;
     }
 }
 
@@ -116,6 +166,7 @@ function createWindow() {
     mainWindow.webContents.on('did-finish-load', () => {
         windowReady = true;
         sendServerInfoToRenderer();
+        // Cursor polling now controlled by renderer via 'cursor-control'
     });
 
     // Show window when ready
@@ -134,7 +185,59 @@ function createWindow() {
     mainWindow.on('closed', () => {
         mainWindow = null;
         windowReady = false;
+        stopCursorPolling();
     });
+}
+
+// Cursor Polling for "Blue Dot"
+let cursorInterval = null;
+let lastCursorPos = { x: 0, y: 0 };
+
+// Control cursor polling from Renderer (based on Screen Share state)
+ipcMain.on('cursor-control', (event, { action }) => {
+    if (action === 'start') {
+        startCursorPolling();
+    } else if (action === 'stop') {
+        stopCursorPolling();
+    }
+});
+
+function startCursorPolling() {
+    if (cursorInterval) return; // Already running
+
+    // Poll cursor position every 16ms (~60fps) for smooth tracking
+    cursorInterval = setInterval(() => {
+        if (!mainWindow || !windowReady) return;
+
+        try {
+            const point = screen.getCursorScreenPoint();
+            const primaryDisplay = screen.getPrimaryDisplay();
+            const { width, height } = primaryDisplay.size;
+
+            // Only send if moved
+            if (point.x !== lastCursorPos.x || point.y !== lastCursorPos.y) {
+                lastCursorPos = point;
+
+                // Send "p2p-screen-frame" (renderer listens for this and broadcasts it)
+                mainWindow.webContents.send('p2p-screen-frame', {
+                    type: 'cursor',
+                    cursorX: point.x, // Match mobile app expectation
+                    cursorY: point.y, // Match mobile app expectation
+                    width: width,
+                    height: height
+                });
+            }
+        } catch (e) {
+            // Ignore errors (e.g. screen locked)
+        }
+    }, 16);
+}
+
+function stopCursorPolling() {
+    if (cursorInterval) {
+        clearInterval(cursorInterval);
+        cursorInterval = null;
+    }
 }
 
 /**
@@ -173,14 +276,16 @@ async function sendServerInfoToRenderer() {
     // Create connection data for QR code (P2P only - just PIN and name)
     const connectionData = {
         pin: SESSION_PIN,
-        name: COMPUTER_NAME
+        name: COMPUTER_NAME,
+        hostId: tokenStorage.getHostId() // Include persistent ID
     };
 
     const qrCode = await generateQRCode(JSON.stringify(connectionData));
     mainWindow.webContents.send('server-ready', {
         qrCode,
         pin: SESSION_PIN,
-        computerName: COMPUTER_NAME
+        computerName: COMPUTER_NAME,
+        hostId: tokenStorage.getHostId()
     });
     console.log(`[Main] Connection PIN: ${SESSION_PIN} | Computer: ${COMPUTER_NAME}`);
 }
@@ -191,8 +296,8 @@ async function sendServerInfoToRenderer() {
 async function initializeServices() {
     try {
         // Initialize injectors
-        keyboardInjector.initialize();
-        mouseInjector.initialize();
+        if (keyboardInjector) keyboardInjector.initialize();
+        if (mouseInjector) mouseInjector.initialize();
 
         // Send server info to renderer (if window is ready)
         sendServerInfoToRenderer();
@@ -237,14 +342,27 @@ ipcMain.on('window-close', () => {
 ipcMain.handle('get-server-info', async () => {
     const connectionData = {
         pin: SESSION_PIN,
-        name: COMPUTER_NAME
+        name: COMPUTER_NAME,
+        hostId: tokenStorage.getHostId()
     };
     const qrCode = await generateQRCode(JSON.stringify(connectionData));
     return {
         qrCode,
         pin: SESSION_PIN,
-        computerName: COMPUTER_NAME
+        computerName: COMPUTER_NAME,
+        hostId: tokenStorage.getHostId()
     };
+});
+
+// IPC: Auth Token Management
+ipcMain.handle('generate-token', async (event, { deviceId, deviceName }) => {
+    const token = require('crypto').randomBytes(32).toString('hex');
+    tokenStorage.saveToken(deviceId, token, deviceName);
+    return token;
+});
+
+ipcMain.handle('validate-token', async (event, { deviceId, token }) => {
+    return tokenStorage.validateToken(deviceId, token);
 });
 
 // IPC: Get Screen Sources for WebRTC
@@ -278,14 +396,9 @@ ipcMain.on('remote-input', (event, data) => {
         return;
     }
 
-    // Handle screen share requests (cursor polling only - video uses native WebRTC)
+    // Handle screen share requests - Legacy/Fallback (Renderer handles actual flow)
     if (data.type === 'screen' || data.type === 'screen-req') {
-        console.log('[Main] Screen share request:', data.action);
-        if (data.action === 'start') {
-            startCursorPolling(event.sender);
-        } else if (data.action === 'stop') {
-            stopCursorPolling();
-        }
+        // Do nothing here - Renderer will send 'cursor-control' IPC
         return;
     }
 
@@ -294,36 +407,6 @@ ipcMain.on('remote-input', (event, data) => {
         if (mouseInjector) mouseInjector.handleMouseEvent(data);
     }
 });
-
-// Cursor Polling for "Blue Dot"
-let cursorInterval = null;
-
-function startCursorPolling(rendererWebContents) {
-    if (cursorInterval) clearInterval(cursorInterval);
-    cursorInterval = setInterval(() => {
-        try {
-            const point = screen.getCursorScreenPoint();
-            const primaryDisplay = screen.getPrimaryDisplay();
-            const { width, height } = primaryDisplay.size;
-
-            // Send cursor position to renderer to forward to phone
-            rendererWebContents.send('p2p-screen-frame', {
-                type: 'cursor',
-                cursorX: point.x,
-                cursorY: point.y,
-                width: width,
-                height: height
-            });
-        } catch (e) { }
-    }, 50); // 20 FPS updates
-}
-
-function stopCursorPolling() {
-    if (cursorInterval) {
-        clearInterval(cursorInterval);
-        cursorInterval = null;
-    }
-}
 
 ipcMain.handle('get-connection-status', () => {
     // P2P mode - connection is managed by renderer.js PeerJS
