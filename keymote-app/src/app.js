@@ -10,7 +10,15 @@ class RemoteInputApp {
         this.messageId = 0;
         this.latencies = [];
         this.lastValue = '';
+
+        // Stable Input State
+        this.lastSentText = '';
+        this.charTimestamps = [];
+        this.previousInput = '';
+        this.typingDelay = parseInt(localStorage.getItem('typingDelay') || '50', 10);
+
         this.theme = localStorage.getItem('theme') || 'dark';
+
         // Load saved auth settings
         this.customServer = localStorage.getItem('customServer') || '';
         this.computerName = localStorage.getItem('computerName') || '';
@@ -33,9 +41,7 @@ class RemoteInputApp {
             status: document.getElementById('loginStatus'),
             savedConnections: document.getElementById('savedConnections'),
             savedList: document.getElementById('savedDevicesList'),
-            // newConnectionToggle removed
             loginForm: document.getElementById('loginForm'),
-            // screen: document.getElementById('loginScreen'), // (Already in this.screens.login?) -- wait, let's keep it simple
             rememberMe: document.getElementById('rememberMe')
         };
 
@@ -96,14 +102,21 @@ class RemoteInputApp {
             scanQrBtn: document.getElementById('scanQrBtn')
         };
 
-        // Load typing delay
-        this.typingDelay = parseInt(localStorage.getItem('typingDelay') || '50', 10);
-
         this.init();
     }
 
     init() {
+        this.initStableInput(); // Initialize the stability loop
         this.applyTheme(this.theme);
+
+        // Sync Settings UI with State
+        if (this.el.typingDelayInput) {
+            this.el.typingDelayInput.value = this.typingDelay;
+            if (this.el.typingDelayValue) {
+                this.el.typingDelayValue.textContent = this.typingDelay + ' ms';
+            }
+        }
+
         this.setupListeners();
         this.setupLoginListeners();
 
@@ -138,7 +151,6 @@ class RemoteInputApp {
             this.renderSavedDevices();
 
             // Connect immediately (bypassing splash delay and login screen)
-            // Use a tiny timeout to ensure DOM is ready and splash is rendered
             setTimeout(() => {
                 this.connectFromSaved(defaultDevice, true);
             }, 100);
@@ -156,6 +168,7 @@ class RemoteInputApp {
             this.renderSavedDevices();
         }, splashDuration);
     }
+
 
     showScreen(screen) {
         // Hide all screens
@@ -639,6 +652,131 @@ class RemoteInputApp {
         }, 15000);
     }
 
+    // ... (keep hideProcessingOverlay, showSuccessOverlay, showErrorOverlay)
+
+    // ============================================
+    // STABLE INPUT LOGIC (Aging Algorithm)
+    // ============================================
+
+    // Initialize Stable Input State (calledin Constructor)
+    initStableInput() {
+        this.lastSentText = ""; // Confirmed text on PC
+        this.charTimestamps = []; // Timestamps of current input chars
+        this.typingDelay = parseInt(localStorage.getItem('typingDelay') || '50', 10);
+
+        // Start the stability loop
+        if (this.stabilityInterval) clearInterval(this.stabilityInterval);
+        this.stabilityInterval = setInterval(() => this.checkStability(), 20); // Check every 20ms
+    }
+
+    // Called whenever the user types/speaks (Input Event)
+    handleStableInput(newValue) {
+        const now = Date.now();
+        const oldText = this.el.input.value; // Actually, newValue IS the current input value
+
+        // 1. Calculate Common Prefix with PREVIOUS Input state (implicitly tracked by charTimestamps length?)
+        // Wait, we need to track what 'charTimestamps' corresponds to.
+        // Let's assume charTimestamps corresponds to the *previous* input value.
+        // Actually simplest way: Compare newValue vs charTimestamps.
+
+        const newTimestamps = [];
+        const commonLen = this.getCommonPrefixLength(newValue, this.previousInput || "");
+
+        // Preserve old timestamps for matching prefix
+        for (let i = 0; i < commonLen && i < this.charTimestamps.length; i++) {
+            newTimestamps[i] = this.charTimestamps[i];
+        }
+
+        // Assign NEW timestamp for anything new/changed
+        for (let i = commonLen; i < newValue.length; i++) {
+            newTimestamps[i] = now;
+        }
+
+        this.charTimestamps = newTimestamps;
+        this.previousInput = newValue;
+    }
+
+    getCommonPrefixLength(s1, s2) {
+        let i = 0;
+        while (i < s1.length && i < s2.length && s1[i] === s2[i]) i++;
+        return i;
+    }
+
+    // The Loop: Checks what is "Old Enough" to send
+    checkStability() {
+        if (!this.isConnected || !this.isAuthenticated) return;
+
+        const now = Date.now();
+        const currentText = this.el.input ? this.el.input.value : "";
+
+        // If empty, reset everything immediately (Manual Clear)
+        if (currentText === "") {
+            this.lastSentText = "";
+            this.charTimestamps = [];
+            this.previousInput = "";
+            return;
+        }
+
+        // 1. Find Stable Length (How many chars from start are > delay old)
+        let stableLength = 0;
+
+        // Optimization: If we have already sent X chars, we assume those X chars are stable 
+        // UNLESS the user deleted them.
+        // So we only really need to check aging for chars *after* the ones we already sent?
+        // No, because STT might replace the end of the sent text.
+        // The timestamps tell the truth.
+
+        for (let i = 0; i < currentText.length; i++) {
+            if (i >= this.charTimestamps.length) break; // Should not happen if sync is good
+
+            const age = now - this.charTimestamps[i];
+
+            // Special Rule: If this char matches what we ALREADY sent at this position, 
+            // treat it as stable immediately (infinite age).
+            // This prevents re-sending or waiting for text we already confirmed.
+            const isAlreadySent = (i < this.lastSentText.length && currentText[i] === this.lastSentText[i]);
+
+            if (isAlreadySent || age >= this.typingDelay) {
+                stableLength++;
+            } else {
+                // As soon as we hit an unstable char, stop. 
+                // We only sync the continuous stable prefix.
+                break;
+            }
+        }
+
+        const stableText = currentText.substring(0, stableLength);
+
+        // 2. Sync if Stable Text is different from Last Sent Text
+        if (stableText !== this.lastSentText) {
+            this.syncText(stableText);
+        }
+    }
+
+    syncText(stableText) {
+        const commonLen = this.getCommonPrefixLength(stableText, this.lastSentText);
+
+        const backspacesNeeded = this.lastSentText.length - commonLen;
+        const textToType = stableText.substring(commonLen);
+
+        if (backspacesNeeded > 0) {
+            console.log(`[StableInput] Backspace x ${backspacesNeeded}`);
+            // Send backspaces
+            for (let i = 0; i < backspacesNeeded; i++) {
+                this.sendKey('Backspace');
+            }
+        }
+
+        if (textToType.length > 0) {
+            console.log(`[StableInput] Typing: "${textToType}"`);
+            this.sendText(textToType, this.typingDelay); // Pass delay param
+        }
+
+        this.lastSentText = stableText;
+    }
+
+    // ... (rest of methods)
+
     hideProcessingOverlay() {
         const overlay = document.getElementById('processingOverlay');
         const textEl = document.getElementById('processingText');
@@ -820,11 +958,6 @@ class RemoteInputApp {
                 const savedSplashDuration = parseInt(localStorage.getItem('splashDuration') || '2500', 10);
                 if (this.el.splashDurationInput) this.el.splashDurationInput.value = savedSplashDuration;
                 if (this.el.splashDurationValue) this.el.splashDurationValue.textContent = (savedSplashDuration / 1000).toFixed(1) + 's';
-
-                // Set typing delay slider
-                if (this.el.typingDelayInput) this.el.typingDelayInput.value = this.typingDelay;
-                if (this.el.typingDelayValue) this.el.typingDelayValue.textContent = this.typingDelay + 'ms';
-
                 this.showScreen('settings');
             };
         }
@@ -838,13 +971,14 @@ class RemoteInputApp {
             };
         }
 
-        // Typing Delay slider handler
+        // Stability Delay Listener
         if (this.el.typingDelayInput) {
-            this.el.typingDelayInput.oninput = () => {
-                const val = parseInt(this.el.typingDelayInput.value, 10);
-                this.typingDelay = val;
-                if (this.el.typingDelayValue) this.el.typingDelayValue.textContent = val + 'ms';
-                localStorage.setItem('typingDelay', val.toString());
+            this.el.typingDelayInput.oninput = (e) => {
+                this.typingDelay = parseInt(e.target.value, 10);
+                if (this.el.typingDelayValue) {
+                    this.el.typingDelayValue.textContent = this.typingDelay + ' ms';
+                }
+                localStorage.setItem('typingDelay', this.typingDelay);
             };
         }
 
@@ -884,6 +1018,10 @@ class RemoteInputApp {
             this.el.deleteAllBtn.onclick = () => {
                 this.el.input.value = '';
                 this.lastValue = '';
+                // Reset Stable State
+                this.lastSentText = "";
+                this.charTimestamps = [];
+                this.previousInput = "";
                 this.el.input.focus();
             };
         }
@@ -910,7 +1048,7 @@ class RemoteInputApp {
             };
         }
 
-        this.el.input.addEventListener('input', e => this.handleInput(e));
+        this.el.input.addEventListener('input', e => this.handleStableInput(e.target.value));
         this.el.input.addEventListener('keydown', e => this.handleKeyDown(e));
 
         // Modifiers - Ctrl, Alt, Shift toggle
@@ -952,19 +1090,34 @@ class RemoteInputApp {
                 const key = btn.dataset.key;
                 const shiftChar = btn.dataset.shift;
 
-                // If shift is held and button has shift character, send the shift character
+                // If shift is held and button has shift character (e.g. numbers to symbols)
                 if (this.modifiers.shift && shiftChar) {
-                    this.sendText(shiftChar);
+                    this.el.input.value += shiftChar;
+                    this.handleStableInput(this.el.input.value);
+                    this.el.input.focus();
                     return;
                 }
 
                 if (this.hasModifiers()) {
                     this.sendKey(key);
                 } else if (key.length === 1 && /[a-zA-Z0-9]/.test(key)) {
-                    this.sendText(this.modifiers.shift ? key.toUpperCase() : key.toLowerCase());
+                    // Alphanumeric keys -> Stable Input
+                    const char = this.modifiers.shift ? key.toUpperCase() : key.toLowerCase();
+                    this.el.input.value += char;
+                    this.handleStableInput(this.el.input.value);
+                    this.el.input.focus();
                 } else if (key.length === 1) {
-                    this.sendText(key);
+                    // Other symbols -> Stable Input
+                    this.el.input.value += key;
+                    this.handleStableInput(this.el.input.value);
+                    this.el.input.focus();
+                } else if (key === 'Backspace') {
+                    // Backspace -> Remove from local buffer
+                    this.el.input.value = this.el.input.value.slice(0, -1);
+                    this.handleStableInput(this.el.input.value);
+                    this.el.input.focus();
                 } else {
+                    // Other special keys (Enter, Esc, etc) -> Send Key directly
                     this.sendKey(key);
                 }
             };
@@ -972,7 +1125,11 @@ class RemoteInputApp {
 
         // Symbol buttons (data-text)
         document.querySelectorAll('[data-text]').forEach(btn => {
-            btn.onclick = () => this.sendText(btn.dataset.text);
+            btn.onclick = () => {
+                this.el.input.value += btn.dataset.text;
+                this.handleStableInput(this.el.input.value);
+                this.el.input.focus();
+            };
         });
 
         // Shortcuts
@@ -1679,7 +1836,12 @@ class RemoteInputApp {
         }
     }
 
-    sendText(t) { if (t) { this.send({ type: 'text', text: t, delay: this.typingDelay, modifiers: this.getMods() }); if (this.hasModifiers()) this.releaseMods(); } }
+    sendText(t, delay = 0) {
+        if (t) {
+            this.send({ type: 'text', text: t, modifiers: this.getMods(), delay: delay });
+            if (this.hasModifiers()) this.releaseMods();
+        }
+    }
     sendKey(k) { this.send({ type: 'key', key: k, modifiers: this.getMods() }); this.releaseMods(); }
     sendShortcut(s) {
         const parts = s.toLowerCase().split('+');

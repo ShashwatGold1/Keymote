@@ -147,7 +147,7 @@ param(
     [switch]$Win,
 
     [Parameter(Mandatory=$false)]
-    [int]$Delay = 50
+    [int]$Delay = 5
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -239,6 +239,9 @@ let isProcessing = false;
 
 function initialize() {
     try {
+        if (fs.existsSync(PS_SCRIPT_PATH)) {
+            try { fs.unlinkSync(PS_SCRIPT_PATH); } catch (e) { /* ignore if locked */ }
+        }
         fs.writeFileSync(PS_SCRIPT_PATH, PS_SCRIPT_CONTENT, 'utf8');
         scriptReady = true;
         console.log('[KeyboardInjector] Script created at:', PS_SCRIPT_PATH);
@@ -271,8 +274,9 @@ async function processQueue() {
         const item = inputQueue.shift();
         try {
             if (item.type === 'text') {
-                const delay = item.delay || 50;
-                await runScript(['-Action', 'text', '-Text', item.text, '-Delay', delay.toString()]);
+                const args = ['-Action', 'text', '-Text', item.text];
+                if (item.delay) args.push('-Delay', item.delay.toString());
+                await runScript(args);
             } else if (item.type === 'key') {
                 const args = ['-Action', 'key', '-VkCode', item.vkCode.toString()];
                 if (item.modifiers?.ctrl) args.push('-Ctrl');
@@ -290,7 +294,7 @@ async function processQueue() {
     isProcessing = false;
 }
 
-function queueText(text, delay = 50) {
+function queueText(text, delay = 0) {
     if (!text) return;
     if (!scriptReady) initialize();
     console.log('[KeyboardInjector] Queuing text:', JSON.stringify(text), 'delay:', delay);
@@ -312,7 +316,8 @@ function queueWinKey() {
     processQueue();
 }
 
-async function sendText(text, delay = 50) { queueText(text, delay); return true; }
+async function sendText(text, delay = 0) { queueText(text, delay); return true; }
+
 async function sendKey(vkCode, modifiers = {}) { queueKey(vkCode, modifiers); return true; }
 
 async function sendSpecialKey(keyName, modifiers = {}) {
@@ -336,9 +341,9 @@ async function handleKeyEvent(event) {
     console.log('[KeyboardInjector] Handling event:', JSON.stringify(event));
     try {
         switch (event.type) {
-            case 'text': return await sendText(event.text, event.delay);
+            case 'text': return await sendText(event.text, event.delay || 0);
             case 'key': return await sendSpecialKey(event.key, event.modifiers || {});
-            case 'char': return await sendText(event.char);
+            case 'char': return await sendText(event.char, event.delay || 0); // handle delay for 'char' too if needed
             case 'shortcut': return await sendSpecialKey(event.key, event.modifiers || {});
             default: console.warn('[KeyboardInjector] Unknown event type:', event.type); return false;
         }
