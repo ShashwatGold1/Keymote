@@ -144,7 +144,10 @@ param(
     [switch]$Shift,
     
     [Parameter(Mandatory=$false)]
-    [switch]$Win
+    [switch]$Win,
+
+    [Parameter(Mandatory=$false)]
+    [int]$Delay = 50
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -214,7 +217,7 @@ switch ($Action) {
             foreach ($char in $Text.ToCharArray()) {
                 $escapedChar = $char.ToString() -replace '[+^%~(){}\\[\\]]', '{$0}'
                 [System.Windows.Forms.SendKeys]::SendWait($escapedChar)
-                Start-Sleep -Milliseconds 5
+                Start-Sleep -Milliseconds $Delay
             }
             Write-Output "OK"
         }
@@ -268,7 +271,8 @@ async function processQueue() {
         const item = inputQueue.shift();
         try {
             if (item.type === 'text') {
-                await runScript(['-Action', 'text', '-Text', item.text]);
+                const delay = item.delay || 50;
+                await runScript(['-Action', 'text', '-Text', item.text, '-Delay', delay.toString()]);
             } else if (item.type === 'key') {
                 const args = ['-Action', 'key', '-VkCode', item.vkCode.toString()];
                 if (item.modifiers?.ctrl) args.push('-Ctrl');
@@ -286,11 +290,11 @@ async function processQueue() {
     isProcessing = false;
 }
 
-function queueText(text) {
+function queueText(text, delay = 50) {
     if (!text) return;
     if (!scriptReady) initialize();
-    console.log('[KeyboardInjector] Queuing text:', JSON.stringify(text));
-    inputQueue.push({ type: 'text', text });
+    console.log('[KeyboardInjector] Queuing text:', JSON.stringify(text), 'delay:', delay);
+    inputQueue.push({ type: 'text', text, delay });
     processQueue();
 }
 
@@ -308,7 +312,7 @@ function queueWinKey() {
     processQueue();
 }
 
-async function sendText(text) { queueText(text); return true; }
+async function sendText(text, delay = 50) { queueText(text, delay); return true; }
 async function sendKey(vkCode, modifiers = {}) { queueKey(vkCode, modifiers); return true; }
 
 async function sendSpecialKey(keyName, modifiers = {}) {
@@ -332,7 +336,7 @@ async function handleKeyEvent(event) {
     console.log('[KeyboardInjector] Handling event:', JSON.stringify(event));
     try {
         switch (event.type) {
-            case 'text': return await sendText(event.text);
+            case 'text': return await sendText(event.text, event.delay);
             case 'key': return await sendSpecialKey(event.key, event.modifiers || {});
             case 'char': return await sendText(event.char);
             case 'shortcut': return await sendSpecialKey(event.key, event.modifiers || {});

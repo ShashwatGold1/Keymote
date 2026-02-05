@@ -67,6 +67,8 @@ class RemoteInputApp {
             authStatus: document.getElementById('authStatus'),
             splashDurationInput: document.getElementById('splashDurationInput'),
             splashDurationValue: document.getElementById('splashDurationValue'),
+            typingDelayInput: document.getElementById('typingDelayInput'),
+            typingDelayValue: document.getElementById('typingDelayValue'),
             // Floating toolbar elements
             floatingToolbar: document.getElementById('floatingToolbar'),
             toolbarHandle: document.getElementById('toolbarHandle'),
@@ -93,6 +95,10 @@ class RemoteInputApp {
             // QR Scanner button
             scanQrBtn: document.getElementById('scanQrBtn')
         };
+
+        // Load typing delay
+        this.typingDelay = parseInt(localStorage.getItem('typingDelay') || '50', 10);
+
         this.init();
     }
 
@@ -814,6 +820,11 @@ class RemoteInputApp {
                 const savedSplashDuration = parseInt(localStorage.getItem('splashDuration') || '2500', 10);
                 if (this.el.splashDurationInput) this.el.splashDurationInput.value = savedSplashDuration;
                 if (this.el.splashDurationValue) this.el.splashDurationValue.textContent = (savedSplashDuration / 1000).toFixed(1) + 's';
+
+                // Set typing delay slider
+                if (this.el.typingDelayInput) this.el.typingDelayInput.value = this.typingDelay;
+                if (this.el.typingDelayValue) this.el.typingDelayValue.textContent = this.typingDelay + 'ms';
+
                 this.showScreen('settings');
             };
         }
@@ -824,6 +835,16 @@ class RemoteInputApp {
                 const val = parseInt(this.el.splashDurationInput.value, 10);
                 if (this.el.splashDurationValue) this.el.splashDurationValue.textContent = (val / 1000).toFixed(1) + 's';
                 localStorage.setItem('splashDuration', val.toString());
+            };
+        }
+
+        // Typing Delay slider handler
+        if (this.el.typingDelayInput) {
+            this.el.typingDelayInput.oninput = () => {
+                const val = parseInt(this.el.typingDelayInput.value, 10);
+                this.typingDelay = val;
+                if (this.el.typingDelayValue) this.el.typingDelayValue.textContent = val + 'ms';
+                localStorage.setItem('typingDelay', val.toString());
             };
         }
 
@@ -1658,7 +1679,7 @@ class RemoteInputApp {
         }
     }
 
-    sendText(t) { if (t) { this.send({ type: 'text', text: t, modifiers: this.getMods() }); if (this.hasModifiers()) this.releaseMods(); } }
+    sendText(t) { if (t) { this.send({ type: 'text', text: t, delay: this.typingDelay, modifiers: this.getMods() }); if (this.hasModifiers()) this.releaseMods(); } }
     sendKey(k) { this.send({ type: 'key', key: k, modifiers: this.getMods() }); this.releaseMods(); }
     sendShortcut(s) {
         const parts = s.toLowerCase().split('+');
