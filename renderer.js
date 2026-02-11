@@ -159,7 +159,7 @@ const peerConfig = {
     config: {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
+            { urls: 'stun:stun1.l.google.com:19302' }
         ]
     }
 };
@@ -203,6 +203,13 @@ function initDiscoveryPeer(pin) {
                 setTimeout(() => conn.close(), 1000);
             }
         });
+    });
+
+    peerDiscovery.on('disconnected', () => {
+        console.log('[Discovery] Disconnected from signaling server, reconnecting...');
+        if (peerDiscovery && !peerDiscovery.destroyed) {
+            peerDiscovery.reconnect();
+        }
     });
 
     peerDiscovery.on('error', (err) => {
@@ -309,6 +316,17 @@ function initSecurePeer(hostId) {
             if (data && (data.type === 'screen' || data.type === 'screen-req') && data.action === 'start') {
                 startScreenShare(conn.peer);
             }
+            if (data && (data.type === 'screen' || data.type === 'screen-req') && data.action === 'stop') {
+                stopScreenShare();
+            }
+
+            // Audio Share Request
+            if (data && data.type === 'audio' && data.action === 'start') {
+                startAudioShare(conn.peer);
+            }
+            if (data && data.type === 'audio' && data.action === 'stop') {
+                stopAudioShare();
+            }
 
             // Input Handling
             if (window.electronAPI.sendRemoteInput) {
@@ -322,6 +340,14 @@ function initSecurePeer(hostId) {
         });
 
         conn.on('error', (err) => console.error('[Secure] Conn Error:', err));
+    });
+
+    // Auto-reconnect to signaling server (keeps call capability alive)
+    peerSecure.on('disconnected', () => {
+        console.log('[Secure] Disconnected from signaling server, reconnecting...');
+        if (peerSecure && !peerSecure.destroyed) {
+            peerSecure.reconnect();
+        }
     });
 
     peerSecure.on('error', (err) => {
@@ -356,14 +382,60 @@ function broadcastToAuthenticated(data) {
     });
 }
 
-// Native WebRTC Screen Sharing
-async function startScreenShare(recipientPeerId) {
+// Helper: get system audio stream (loopback) via Electron
+async function getSystemAudioStream() {
+    // Electron 28+ requires a dummy video track to capture desktop audio
+    // We capture both, then discard the video track
+    const sources = await window.electronAPI.getSources();
+    if (!sources || sources.length === 0) return null;
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                mandatory: {
+                    chromeMediaSource: 'desktop'
+                }
+            },
+            video: {
+                mandatory: {
+                    chromeMediaSource: 'desktop',
+                    chromeMediaSourceId: sources[0].id,
+                    maxWidth: 1,
+                    maxHeight: 1
+                }
+            }
+        });
+        // Remove the dummy video track, keep only audio
+        stream.getVideoTracks().forEach(t => { t.stop(); stream.removeTrack(t); });
+        if (stream.getAudioTracks().length > 0) {
+            console.log('[Renderer] System audio captured');
+            return stream;
+        }
+        return null;
+    } catch (err) {
+        console.log('[Renderer] System audio not available:', err.message);
+        return null;
+    }
+}
+
+// Native WebRTC Screen Sharing (with system audio if available)
+let activeScreenCall = null;
+let activeScreenStream = null;
+let screenHasAudio = false;
+let screenShareRetryTimer = null;
+
+async function startScreenShare(recipientPeerId, retryCount = 0) {
+    // Mutual exclusion: stop audio share if active
+    stopAudioShare();
+
+    if (retryCount === 0) stopScreenShare(); // Clean up any existing share
+    if (screenShareRetryTimer) { clearTimeout(screenShareRetryTimer); screenShareRetryTimer = null; }
+
     try {
         const sources = await window.electronAPI.getSources();
         if (!sources || sources.length === 0) return;
 
         const source = sources[0];
-        const stream = await navigator.mediaDevices.getUserMedia({
+        const videoStream = await navigator.mediaDevices.getUserMedia({
             audio: false,
             video: {
                 mandatory: {
@@ -377,23 +449,120 @@ async function startScreenShare(recipientPeerId) {
             }
         });
 
-        // Call the specific peer instance that requested it
-        // Note: PeerJS handles calling by ID. Since we have two peer instances, make sure we use the right one.
-        // Screen share requests come to 'peerSecure' usually.
-        const call = peerSecure.call(recipientPeerId, stream);
+        // Try to add system audio
+        const audioStream = await getSystemAudioStream();
+        screenHasAudio = false;
+        if (audioStream) {
+            audioStream.getAudioTracks().forEach(t => videoStream.addTrack(t));
+            screenHasAudio = true;
+            window.electronAPI.setSystemMute(true);
+            console.log('[Renderer] Screen share with system audio (PC muted)');
+        } else {
+            console.log('[Renderer] Screen share without audio (not available)');
+        }
+
+        activeScreenStream = videoStream;
+        activeScreenCall = peerSecure.call(recipientPeerId, videoStream);
 
         if (window.electronAPI.sendCursorControl) {
             window.electronAPI.sendCursorControl('start');
         }
 
-        call.on('close', () => {
-            stream.getTracks().forEach(t => t.stop());
-            if (window.electronAPI.sendCursorControl) {
-                window.electronAPI.sendCursorControl('stop');
+        activeScreenCall.on('close', () => {
+            cleanupScreenShare();
+        });
+
+        activeScreenCall.on('error', (err) => {
+            console.error('[Renderer] Screen call error:', err);
+            cleanupScreenShare();
+            if (retryCount < 2) {
+                const delay = (retryCount + 1) * 2000;
+                console.log(`[Renderer] Retrying screen share in ${delay / 1000}s (attempt ${retryCount + 2}/3)...`);
+                screenShareRetryTimer = setTimeout(() => startScreenShare(recipientPeerId, retryCount + 1), delay);
             }
         });
     } catch (err) {
         console.error('[Renderer] Screen Share Failed:', err);
+        cleanupScreenShare();
+    }
+}
+
+function cleanupScreenShare() {
+    if (!activeScreenStream && !activeScreenCall) return;
+    if (activeScreenStream) {
+        activeScreenStream.getTracks().forEach(t => t.stop());
+        activeScreenStream = null;
+    }
+    if (screenHasAudio) {
+        window.electronAPI.setSystemMute(false);
+        screenHasAudio = false;
+    }
+    if (window.electronAPI.sendCursorControl) {
+        window.electronAPI.sendCursorControl('stop');
+    }
+    activeScreenCall = null;
+    console.log('[Renderer] Screen share stopped');
+}
+
+function stopScreenShare() {
+    if (screenShareRetryTimer) { clearTimeout(screenShareRetryTimer); screenShareRetryTimer = null; }
+    if (activeScreenCall) {
+        activeScreenCall.close();
+    }
+    cleanupScreenShare();
+}
+
+// Audio-only sharing (system audio without screen)
+let activeAudioCall = null;
+let audioShareRetryTimer = null;
+
+async function startAudioShare(recipientPeerId, retryCount = 0) {
+    // Mutual exclusion: stop screen share if active
+    stopScreenShare();
+
+    if (audioShareRetryTimer) { clearTimeout(audioShareRetryTimer); audioShareRetryTimer = null; }
+
+    try {
+        const audioStream = await getSystemAudioStream();
+        if (!audioStream) {
+            console.error('[Renderer] Audio Share Failed: no system audio available');
+            return;
+        }
+
+        window.electronAPI.setSystemMute(true);
+        activeAudioCall = peerSecure.call(recipientPeerId, audioStream, { metadata: { type: 'audio-only' } });
+
+        activeAudioCall.on('close', () => {
+            audioStream.getTracks().forEach(t => t.stop());
+            window.electronAPI.setSystemMute(false);
+            activeAudioCall = null;
+            console.log('[Renderer] Audio call closed (PC unmuted)');
+        });
+
+        activeAudioCall.on('error', (err) => {
+            console.error('[Renderer] Audio call error:', err);
+            audioStream.getTracks().forEach(t => t.stop());
+            window.electronAPI.setSystemMute(false);
+            activeAudioCall = null;
+            if (retryCount < 2) {
+                const delay = (retryCount + 1) * 2000;
+                console.log(`[Renderer] Retrying audio share in ${delay / 1000}s (attempt ${retryCount + 2}/3)...`);
+                audioShareRetryTimer = setTimeout(() => startAudioShare(recipientPeerId, retryCount + 1), delay);
+            }
+        });
+
+        console.log('[Renderer] Audio Share Started (PC muted)');
+    } catch (err) {
+        console.error('[Renderer] Audio Share Failed:', err);
+        window.electronAPI.setSystemMute(false);
+    }
+}
+
+function stopAudioShare() {
+    if (audioShareRetryTimer) { clearTimeout(audioShareRetryTimer); audioShareRetryTimer = null; }
+    if (activeAudioCall) {
+        activeAudioCall.close();
+        // cleanup happens in the on('close') handler
     }
 }
 

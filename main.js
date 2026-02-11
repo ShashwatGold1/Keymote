@@ -189,6 +189,14 @@ function createWindow() {
     });
 }
 
+// System Audio Mute Control - Persistent PowerShell process for instant mute/unmute
+const audioMuteInjector = require('./audio-mute-injector');
+audioMuteInjector.initialize();
+
+ipcMain.on('set-system-mute', (event, shouldMute) => {
+    audioMuteInjector.setMute(shouldMute);
+});
+
 // Cursor Polling for "Blue Dot"
 let cursorInterval = null;
 let lastCursorPos = { x: 0, y: 0 };
@@ -477,6 +485,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', async () => {
     isQuitting = true;
     stopCursorPolling();
+    audioMuteInjector.cleanup();
 });
 
 // Handle system theme changes

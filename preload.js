@@ -55,6 +55,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Cursor position updates
     onCursorUpdate: (callback) => {
         ipcRenderer.on('cursor-update', (event, data) => callback(data));
-    }
+    },
+
+    // System audio mute control
+    setSystemMute: (mute) => ipcRenderer.send('set-system-mute', mute)
 });
 

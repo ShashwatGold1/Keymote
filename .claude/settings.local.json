@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx cap:*)",
+      "Bash(node -e:*)",
+      "Bash(npm start)",
+      "Bash(npx electron:*)",
+      "Bash(git stash:*)",
+      "Bash(where:*)",
+      "Bash(dir:*)"
+    ]
+  }
+}

@@ -1035,6 +1035,12 @@ class RemoteInputApp {
 
                 // Auto-start/stop streaming when section is shown/hidden
                 this.isStreaming = hidden; // true when showing, false when hiding
+
+                // Mutual exclusion: stop audio share when starting screen share
+                if (this.isStreaming && this.isAudioSharing) {
+                    this.stopAudioShareUI();
+                }
+
                 this.send({ type: 'screen', action: hidden ? 'start' : 'stop' });
 
                 const hint = document.getElementById('trackpadHint');
@@ -1045,6 +1051,38 @@ class RemoteInputApp {
                     if (screenImage) screenImage.style.display = 'none';
                     if (cursorIndicator) cursorIndicator.style.display = 'none';
                 }
+            };
+        }
+
+        // Audio Share section toggle
+        const toggleAudio = document.getElementById('toggleAudio');
+        const audioContainer = document.getElementById('audioContainer');
+        if (toggleAudio && audioContainer) {
+            this.isAudioSharing = false;
+            toggleAudio.onclick = () => {
+                this.isAudioSharing = !this.isAudioSharing;
+                audioContainer.style.display = this.isAudioSharing ? 'block' : 'none';
+                toggleAudio.textContent = this.isAudioSharing ? 'Stop' : 'Start';
+
+                // Mutual exclusion: stop screen share when starting audio share
+                if (this.isAudioSharing && this.isStreaming) {
+                    this.stopScreenShareUI();
+                }
+
+                this.send({ type: 'audio', action: this.isAudioSharing ? 'start' : 'stop' });
+                const status = document.getElementById('audioStatus');
+                if (status) status.textContent = this.isAudioSharing ? 'Streaming system audio...' : '';
+            };
+        }
+
+        // Keyboard section toggle
+        const toggleKeyboard = document.getElementById('toggleKeyboard');
+        const keyboardContainer = document.getElementById('keyboardContainer');
+        if (toggleKeyboard && keyboardContainer) {
+            toggleKeyboard.onclick = () => {
+                const hidden = keyboardContainer.style.display === 'none';
+                keyboardContainer.style.display = hidden ? '' : 'none';
+                toggleKeyboard.textContent = hidden ? 'Hide' : 'Show';
             };
         }
 
@@ -1144,6 +1182,26 @@ class RemoteInputApp {
         const rotateBtn = document.getElementById('rotateBtn');
         const screenViewer = document.getElementById('screenViewer');
         const exitFullscreenBtn = document.getElementById('exitFullscreenBtn');
+        const resetScreenViewBtn = document.getElementById('resetScreenViewBtn');
+
+        // Reset zoom/pan button
+        if (resetScreenViewBtn) {
+            resetScreenViewBtn.onclick = () => {
+                this.screenOffsetX = 0;
+                this.screenOffsetY = 0;
+                this.screenZoom = 100;
+                if (this.el.screenOffsetX) this.el.screenOffsetX.value = 0;
+                if (this.el.screenOffsetXValue) this.el.screenOffsetXValue.value = 0;
+                if (this.el.screenOffsetY) this.el.screenOffsetY.value = 0;
+                if (this.el.screenOffsetYValue) this.el.screenOffsetYValue.value = 0;
+                if (this.el.screenZoom) this.el.screenZoom.value = 100;
+                if (this.el.screenZoomValue) this.el.screenZoomValue.value = 100;
+                localStorage.setItem('screenOffsetX', '0');
+                localStorage.setItem('screenOffsetY', '0');
+                localStorage.setItem('screenZoom', '100');
+                this.applyScreenTransform();
+            };
+        }
 
         // Helper to update back button visibility
         const updateBackBtn = () => {
@@ -1205,12 +1263,26 @@ class RemoteInputApp {
             let touchMoved = false;
             const sensitivity = 2.5;
 
+            // Two-finger gesture state
+            let lastPinchDist = null;
+            let lastPinchMid = null;
+
             trackpadOverlay.addEventListener('touchstart', (e) => {
                 e.preventDefault();
                 if (e.touches.length === 1) {
                     lastTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
                     touchStartTime = Date.now();
                     touchMoved = false;
+                } else if (e.touches.length === 2) {
+                    // Initialize pinch/pan state
+                    lastTouch = null;
+                    const dx = e.touches[1].clientX - e.touches[0].clientX;
+                    const dy = e.touches[1].clientY - e.touches[0].clientY;
+                    lastPinchDist = Math.hypot(dx, dy);
+                    lastPinchMid = {
+                        x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+                        y: (e.touches[0].clientY + e.touches[1].clientY) / 2
+                    };
                 }
             }, { passive: false });
 
@@ -1232,15 +1304,67 @@ class RemoteInputApp {
                         this.sendMouse('move', { dx: Math.round(dx), dy: Math.round(dy) });
                         lastTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
                     }
+                } else if (e.touches.length === 2 && lastPinchDist !== null) {
+                    // Pinch-to-zoom
+                    const dx = e.touches[1].clientX - e.touches[0].clientX;
+                    const dy = e.touches[1].clientY - e.touches[0].clientY;
+                    const dist = Math.hypot(dx, dy);
+                    const zoomDelta = (dist - lastPinchDist) * 0.5;
+                    lastPinchDist = dist;
+
+                    // Two-finger pan
+                    const mid = {
+                        x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+                        y: (e.touches[0].clientY + e.touches[1].clientY) / 2
+                    };
+                    let panDx = mid.x - lastPinchMid.x;
+                    let panDy = mid.y - lastPinchMid.y;
+                    lastPinchMid = mid;
+
+                    // Rotate pan coordinates when screen is rotated 90° clockwise
+                    if (screenViewer && screenViewer.classList.contains('rotated')) {
+                        const temp = panDx;
+                        panDx = panDy;
+                        panDy = -temp;
+                    }
+
+                    // Apply zoom
+                    if (Math.abs(zoomDelta) > 0.5) {
+                        this.screenZoom = Math.max(50, Math.min(400, this.screenZoom + zoomDelta));
+                        if (this.el.screenZoom) this.el.screenZoom.value = Math.min(this.screenZoom, 400);
+                        if (this.el.screenZoomValue) this.el.screenZoomValue.value = Math.round(this.screenZoom);
+                        localStorage.setItem('screenZoom', Math.round(this.screenZoom).toString());
+                    }
+
+                    // Apply pan
+                    if (Math.abs(panDx) > 0.5 || Math.abs(panDy) > 0.5) {
+                        this.screenOffsetX = Math.max(-200, Math.min(200, this.screenOffsetX + panDx));
+                        this.screenOffsetY = Math.max(-200, Math.min(200, this.screenOffsetY + panDy));
+                        if (this.el.screenOffsetX) this.el.screenOffsetX.value = this.screenOffsetX;
+                        if (this.el.screenOffsetXValue) this.el.screenOffsetXValue.value = Math.round(this.screenOffsetX);
+                        if (this.el.screenOffsetY) this.el.screenOffsetY.value = this.screenOffsetY;
+                        if (this.el.screenOffsetYValue) this.el.screenOffsetYValue.value = Math.round(this.screenOffsetY);
+                        localStorage.setItem('screenOffsetX', Math.round(this.screenOffsetX).toString());
+                        localStorage.setItem('screenOffsetY', Math.round(this.screenOffsetY).toString());
+                    }
+
+                    this.applyScreenTransform();
                 }
             }, { passive: false });
 
             trackpadOverlay.addEventListener('touchend', (e) => {
+                if (e.touches.length < 2) {
+                    // Reset pinch/pan state when fingers lift
+                    lastPinchDist = null;
+                    lastPinchMid = null;
+                }
                 // Tap to click (if touch was short and didn't move)
-                if (!touchMoved && Date.now() - touchStartTime < 200) {
+                if (e.touches.length === 0 && !touchMoved && Date.now() - touchStartTime < 200) {
                     this.sendMouse('left');
                 }
-                lastTouch = null;
+                if (e.touches.length === 0) {
+                    lastTouch = null;
+                }
             });
         }
 
@@ -1328,27 +1452,40 @@ class RemoteInputApp {
             config: {
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:global.stun.twilio.com:3478' }
+                    { urls: 'stun:stun1.l.google.com:19302' }
                 ]
             }
         });
 
         this.peer.on('call', (call) => {
-            console.log('[P2P] Incoming Video Call');
-            call.answer(); // Answer automatically
+            const isAudioOnly = call.metadata && call.metadata.type === 'audio-only';
+            console.log(`[P2P] Incoming ${isAudioOnly ? 'Audio' : 'Video'} Call`);
+            call.answer();
+
             call.on('stream', (stream) => {
-                console.log('[P2P] Stream Received');
-                const video = document.getElementById('remoteVideo');
-                const img = document.getElementById('screenImage');
-                if (video) {
-                    video.srcObject = stream;
-                    video.style.display = 'block';
-                    if (img) img.style.display = 'none';
-                    video.onloadedmetadata = () => {
-                        video.play().catch(e => console.error('Play error:', e));
-                        this.screenWidth = video.videoWidth;
-                        this.screenHeight = video.videoHeight;
-                    };
+                if (isAudioOnly) {
+                    // Audio-only stream — route to audio element
+                    console.log('[P2P] Audio Stream Received');
+                    const audio = document.getElementById('remoteAudio');
+                    if (audio) {
+                        audio.srcObject = stream;
+                        audio.play().catch(e => console.error('Audio play error:', e));
+                    }
+                } else {
+                    // Screen share stream (may include audio)
+                    console.log('[P2P] Video Stream Received');
+                    const video = document.getElementById('remoteVideo');
+                    const img = document.getElementById('screenImage');
+                    if (video) {
+                        video.srcObject = stream;
+                        video.style.display = 'block';
+                        if (img) img.style.display = 'none';
+                        video.onloadedmetadata = () => {
+                            video.play().catch(e => console.error('Play error:', e));
+                            this.screenWidth = video.videoWidth;
+                            this.screenHeight = video.videoHeight;
+                        };
+                    }
                 }
             });
         });
@@ -1438,8 +1575,21 @@ class RemoteInputApp {
             });
         });
 
+        // Auto-reconnect to signaling server (keeps call capability alive)
+        this.peer.on('disconnected', () => {
+            console.log('[P2P] Disconnected from signaling server, reconnecting...');
+            if (this.peer && !this.peer.destroyed) {
+                this.peer.reconnect();
+            }
+        });
+
         this.peer.on('error', (err) => {
             console.error('[P2P] Error:', err);
+            // Don't show error overlay for call failures - data channel still works
+            if (err.type === 'peer-unavailable') {
+                console.warn('[P2P] Peer unavailable (call may retry)');
+                return;
+            }
             this.updateLoginStatus('P2P Error: ' + err.type, 'error');
             this.showErrorOverlay('Error: ' + err.type);
         });
@@ -1657,6 +1807,28 @@ class RemoteInputApp {
         this.updateStatus('error', 'Connection Lost');
         this.showScreen('login');
         this.renderSavedDevices();
+    }
+
+    // Helper: collapse screen share UI without sending a message
+    stopScreenShareUI() {
+        this.isStreaming = false;
+        if (this.el.mouseContainer) this.el.mouseContainer.style.display = 'none';
+        if (this.el.toggleMouse) this.el.toggleMouse.textContent = 'Show';
+        const hint = document.getElementById('trackpadHint');
+        if (hint) hint.style.display = 'flex';
+        this.send({ type: 'screen', action: 'stop' });
+    }
+
+    // Helper: collapse audio share UI without sending a message
+    stopAudioShareUI() {
+        this.isAudioSharing = false;
+        const audioContainer = document.getElementById('audioContainer');
+        const toggleAudio = document.getElementById('toggleAudio');
+        const status = document.getElementById('audioStatus');
+        if (audioContainer) audioContainer.style.display = 'none';
+        if (toggleAudio) toggleAudio.textContent = 'Start';
+        if (status) status.textContent = '';
+        this.send({ type: 'audio', action: 'stop' });
     }
 
     handleMessage(data) {
@@ -1885,7 +2057,7 @@ class RemoteInputApp {
         };
 
         const updateZoom = (val) => {
-            this.screenZoom = Math.max(50, Math.min(200, val));
+            this.screenZoom = Math.max(50, Math.min(400, val));
             if (this.el.screenZoom) this.el.screenZoom.value = this.screenZoom;
             if (this.el.screenZoomValue) this.el.screenZoomValue.value = this.screenZoom;
             localStorage.setItem('screenZoom', this.screenZoom.toString());
@@ -1937,11 +2109,11 @@ class RemoteInputApp {
     }
 
     applyScreenTransform() {
-        const video = document.getElementById('remoteVideo');
-        if (video) {
+        const wrapper = document.getElementById('screenTransformWrapper');
+        if (wrapper) {
             const scale = this.screenZoom / 100;
-            video.style.transform = `translate(${this.screenOffsetX}px, ${this.screenOffsetY}px) scale(${scale})`;
-            video.style.transformOrigin = 'center center';
+            wrapper.style.transform = `translate(${this.screenOffsetX}px, ${this.screenOffsetY}px) scale(${scale})`;
+            wrapper.style.transformOrigin = 'center center';
         }
     }
 }
