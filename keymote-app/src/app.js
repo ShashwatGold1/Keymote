@@ -19,6 +19,11 @@ class RemoteInputApp {
 
         this.theme = localStorage.getItem('theme') || 'dark';
 
+        // Background survival state
+        this.wakeLock = null;
+        this.keepAliveAudio = null;
+        this.backgroundTimestamp = null;
+
         // Load saved auth settings
         this.customServer = localStorage.getItem('customServer') || '';
         this.computerName = localStorage.getItem('computerName') || '';
@@ -119,6 +124,7 @@ class RemoteInputApp {
 
         this.setupListeners();
         this.setupLoginListeners();
+        this.setupBackgroundSurvival();
 
         // Disconnect Button
         const disconnectBtn = document.getElementById('disconnectBtn');
@@ -1416,7 +1422,13 @@ class RemoteInputApp {
         }
 
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible' && !this.isConnected) this.connect();
+            if (document.visibilityState === 'visible') {
+                // Delegate to unified resume handler
+                this.handleResume();
+            } else {
+                // Going to background
+                this.handleBackground();
+            }
         });
     }
 
@@ -1540,6 +1552,7 @@ class RemoteInputApp {
                         console.log('[P2P] Auth Successful!');
                         this.isConnected = true;
                         this.isAuthenticated = true;
+                        this.autoReconnectAttempts = 0; // Reset reconnect counter on success
 
                         this.updateStatus('connected', 'Connected (Secure)');
                         if (!silent) {
@@ -1548,6 +1561,7 @@ class RemoteInputApp {
                         }
 
                         this.startPing();
+                        this.onConnectionEstablished();
                         setTimeout(() => this.showScreen('main'), 500);
                     } else {
                         console.error('[P2P] Auth Failed:', data.error);
@@ -1734,6 +1748,7 @@ class RemoteInputApp {
         this.isConnected = false;
         this.isAuthenticated = false;
         this.stopPing();
+        this.onConnectionTornDown();
     }
 
     scheduleReconnect() {
@@ -1751,33 +1766,34 @@ class RemoteInputApp {
     }
 
     // Ping-Pong Heartbeat System
-    // Ping-Pong Heartbeat System
     startPing() {
         if (this.pingInt) clearInterval(this.pingInt);
         this.lastPongTime = Date.now();
         this.missedPongs = 0;
 
-        // Send ping every 2 seconds
+        // Send ping every 5 seconds (matches desktop rhythm, keeps NAT alive)
         this.pingInt = setInterval(() => {
             if (this.isConnected && this.isAuthenticated) {
-                // Determine connection to use
+                // Send ping
                 if (this.p2pConn && this.p2pConn.open) {
                     this.p2pConn.send({ type: 'ping', time: Date.now() });
                 }
 
                 // Check if we've received a pong recently
                 const timeSinceLastPong = Date.now() - this.lastPongTime;
-                if (timeSinceLastPong > 8000) { // 8 seconds without pong (generous)
-                    console.warn('[Ping] Connection dead - no pong received');
+                if (timeSinceLastPong > 25000) { // 25s without pong
                     this.missedPongs++;
+                    console.warn(`[Ping] Missed pong #${this.missedPongs}`);
 
-                    if (this.missedPongs >= 2) {
+                    if (this.missedPongs >= 4) {
                         console.error('[Ping] Connection lost - disconnecting');
                         this.handleConnectionLost();
                     }
+                } else {
+                    this.missedPongs = 0; // Reset on successful pong
                 }
             }
-        }, 2000);
+        }, 5000);
         console.log('[Ping] Started P2P heartbeat service');
     }
 
@@ -1788,8 +1804,236 @@ class RemoteInputApp {
         }
     }
 
+    // =============================================
+    // BACKGROUND SURVIVAL SYSTEM
+    // Keeps connection alive when phone sleeps/backgrounds
+    // =============================================
+
+    // Request Wake Lock to prevent CPU/screen sleep
+    async acquireWakeLock() {
+        // Try Web Wake Lock API (Chrome 84+, Android WebView)
+        if ('wakeLock' in navigator) {
+            try {
+                this.wakeLock = await navigator.wakeLock.request('screen');
+                console.log('[WakeLock] Acquired');
+                this.wakeLock.addEventListener('release', () => {
+                    console.log('[WakeLock] Released');
+                    // Re-acquire if still connected (released due to tab switch)
+                    if (this.isConnected && this.isAuthenticated && document.visibilityState === 'visible') {
+                        this.acquireWakeLock();
+                    }
+                });
+            } catch (err) {
+                console.warn('[WakeLock] Failed:', err.message);
+            }
+        }
+
+        // Try Capacitor KeepAwake plugin
+        try {
+            const { KeepAwake } = window.Capacitor?.Plugins || {};
+            if (KeepAwake) {
+                await KeepAwake.keepAwake();
+                console.log('[KeepAwake] Capacitor keep-awake enabled');
+            }
+        } catch (err) {
+            console.warn('[KeepAwake] Capacitor plugin not available:', err.message);
+        }
+    }
+
+    async releaseWakeLock() {
+        if (this.wakeLock) {
+            try {
+                await this.wakeLock.release();
+            } catch { }
+            this.wakeLock = null;
+        }
+
+        try {
+            const { KeepAwake } = window.Capacitor?.Plugins || {};
+            if (KeepAwake) {
+                await KeepAwake.allowSleep();
+            }
+        } catch { }
+    }
+
+    // Silent audio keep-alive: prevents Android from killing WebView in background
+    startKeepAliveAudio() {
+        if (this.keepAliveAudio) return;
+
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            // Create a silent oscillator
+            const oscillator = ctx.createOscillator();
+            const gainNode = ctx.createGain();
+            gainNode.gain.value = 0.001; // Near-silent
+            oscillator.connect(gainNode);
+            gainNode.connect(ctx.destination);
+            oscillator.start();
+
+            this.keepAliveAudio = { ctx, oscillator, gainNode };
+            console.log('[KeepAlive] Silent audio started');
+        } catch (err) {
+            console.warn('[KeepAlive] Audio context failed:', err.message);
+        }
+    }
+
+    stopKeepAliveAudio() {
+        if (this.keepAliveAudio) {
+            try {
+                this.keepAliveAudio.oscillator.stop();
+                this.keepAliveAudio.ctx.close();
+            } catch { }
+            this.keepAliveAudio = null;
+            console.log('[KeepAlive] Silent audio stopped');
+        }
+    }
+
+    // Setup all background survival listeners
+    setupBackgroundSurvival() {
+        // Capacitor App state change (native Android foreground/background)
+        try {
+            const { App } = window.Capacitor?.Plugins || {};
+            if (App) {
+                App.addListener('appStateChange', ({ isActive }) => {
+                    console.log(`[Background] App state: ${isActive ? 'FOREGROUND' : 'BACKGROUND'}`);
+                    if (isActive) {
+                        this.handleResume();
+                    } else {
+                        this.handleBackground();
+                    }
+                });
+                console.log('[Background] Capacitor App listener registered');
+            }
+        } catch (err) {
+            console.warn('[Background] Capacitor App plugin not available:', err.message);
+        }
+
+        // Page Lifecycle API events
+        document.addEventListener('freeze', () => {
+            console.log('[Background] Page frozen');
+            this.handleBackground();
+        });
+
+        document.addEventListener('resume', () => {
+            console.log('[Background] Page resumed from freeze');
+            this.handleResume();
+        });
+    }
+
+    handleBackground() {
+        this.backgroundTimestamp = Date.now();
+        console.log('[Background] Entering background, connection state:', this.isConnected);
+
+        // Send a last ping before going to background
+        if (this.isConnected && this.p2pConn && this.p2pConn.open) {
+            this.p2pConn.send({ type: 'ping', time: Date.now() });
+        }
+    }
+
+    handleResume() {
+        const bgDuration = this.backgroundTimestamp ? Date.now() - this.backgroundTimestamp : 0;
+        console.log(`[Background] Resuming after ${Math.round(bgDuration / 1000)}s`);
+        this.backgroundTimestamp = null;
+
+        // Re-acquire wake lock (Android releases it on background)
+        if (this.isConnected && this.isAuthenticated) {
+            this.acquireWakeLock();
+        }
+
+        // Reset heartbeat timers to prevent false-positive death detection
+        this.lastPongTime = Date.now();
+        this.missedPongs = 0;
+
+        if (this.isConnected && this.p2pConn) {
+            if (this.p2pConn.open) {
+                // Connection object says it's open - verify with a fast ping probe
+                console.log('[Background] Sending probe ping...');
+                this.p2pConn.send({ type: 'ping', time: Date.now() });
+
+                // If no pong in 5s after resume, connection is dead - reconnect
+                if (this.resumeProbeTimer) clearTimeout(this.resumeProbeTimer);
+                this.resumeProbeTimer = setTimeout(() => {
+                    if (Date.now() - this.lastPongTime > 4500) {
+                        console.warn('[Background] Probe failed - no pong after resume, reconnecting...');
+                        this.handleConnectionLost();
+                    } else {
+                        console.log('[Background] Probe succeeded - connection alive');
+                    }
+                }, 5000);
+            } else {
+                // Connection is already closed, reconnect immediately
+                console.warn('[Background] Connection closed during background, reconnecting...');
+                this.handleConnectionLost();
+            }
+        } else if (!this.isConnected) {
+            // Not connected at all, try auto-reconnect
+            const defaultDevice = localStorage.getItem('defaultDevice');
+            if (defaultDevice && this.savedDevices[defaultDevice]) {
+                console.log('[Background] Not connected, auto-reconnecting...');
+                this.connectFromSaved(defaultDevice, true);
+            }
+        }
+    }
+
+    // Android Foreground Service — prevents Android from killing the app
+    async startForegroundService() {
+        try {
+            const { ForegroundService } = window.Capacitor?.Plugins || {};
+            if (!ForegroundService) {
+                console.warn('[ForegroundService] Plugin not available');
+                return;
+            }
+            await ForegroundService.startForegroundService({
+                id: 1,
+                title: 'Keymote Connected',
+                body: 'Remote control session active',
+                smallIcon: 'ic_stat_connected',
+                buttons: [{ title: 'Disconnect', id: 1 }]
+            });
+            console.log('[ForegroundService] Started');
+
+            // Handle disconnect button press from notification
+            ForegroundService.addListener('buttonClicked', ({ buttonId }) => {
+                if (buttonId === 1) {
+                    this.handleConnectionLost();
+                }
+            });
+        } catch (err) {
+            console.warn('[ForegroundService] Failed to start:', err.message);
+        }
+    }
+
+    async stopForegroundService() {
+        try {
+            const { ForegroundService } = window.Capacitor?.Plugins || {};
+            if (ForegroundService) {
+                await ForegroundService.stopForegroundService();
+                console.log('[ForegroundService] Stopped');
+            }
+        } catch { }
+    }
+
+    // Called when connection is successfully established
+    onConnectionEstablished() {
+        this.acquireWakeLock();
+        this.startKeepAliveAudio();
+        this.startForegroundService();
+    }
+
+    // Called when connection is fully torn down
+    onConnectionTornDown() {
+        this.releaseWakeLock();
+        this.stopKeepAliveAudio();
+        this.stopForegroundService();
+        if (this.resumeProbeTimer) {
+            clearTimeout(this.resumeProbeTimer);
+            this.resumeProbeTimer = null;
+        }
+    }
+
     handleConnectionLost() {
         this.stopPing();
+        this.onConnectionTornDown();
         this.isConnected = false;
         this.isAuthenticated = false;
 
@@ -1802,6 +2046,30 @@ class RemoteInputApp {
         if (this.peer) {
             this.peer.destroy();
             this.peer = null;
+        }
+
+        // Auto-reconnect using saved device credentials
+        const defaultDevice = localStorage.getItem('defaultDevice');
+        if (defaultDevice && this.savedDevices[defaultDevice]) {
+            this.autoReconnectAttempts = (this.autoReconnectAttempts || 0) + 1;
+
+            if (this.autoReconnectAttempts <= 5) {
+                // Exponential backoff: 2s, 4s, 8s, 16s, 30s
+                const delay = Math.min(2000 * Math.pow(2, this.autoReconnectAttempts - 1), 30000);
+                console.log(`[Reconnect] Attempt ${this.autoReconnectAttempts}/5 in ${delay / 1000}s...`);
+                this.updateStatus('error', `Reconnecting (${this.autoReconnectAttempts}/5)...`);
+
+                if (this.autoReconnectTimer) clearTimeout(this.autoReconnectTimer);
+                this.autoReconnectTimer = setTimeout(() => {
+                    if (!this.isConnected) {
+                        this.connectFromSaved(defaultDevice, true);
+                    }
+                }, delay);
+                return; // Don't show login screen during auto-reconnect
+            } else {
+                console.warn('[Reconnect] Max attempts reached, giving up');
+                this.autoReconnectAttempts = 0;
+            }
         }
 
         this.updateStatus('error', 'Connection Lost');

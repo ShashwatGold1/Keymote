@@ -7,7 +7,11 @@
       "Bash(npx electron:*)",
       "Bash(git stash:*)",
       "Bash(where:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(.gradlew.bat assembleDebug:*)",
+      "Bash(cmd /c:*)",
+      "Bash(cmd.exe:*)",
+      "Bash(powershell.exe -Command \"Set-Location ''c:\\\\Users\\\\ojhas\\\\OneDrive\\\\Desktop\\\\MicrophoneS\\\\keymote-app\\\\android''; .\\\\gradlew.bat assembleDebug 2>&1\")"
     ]
   }
 }

@@ -226,22 +226,39 @@ function startHeartbeat(conn) {
     if (conn.heartbeatInfo) clearInterval(conn.heartbeatInfo);
 
     conn.lastPong = Date.now();
+    conn.isSleeping = false;
+
     conn.heartbeatInfo = setInterval(() => {
-        // Check if connection is dead (no pong for 10s)
-        if (Date.now() - conn.lastPong > 10000) {
-            console.error(`[Secure] Connection dead: ${conn.deviceName}`);
+        const silenceSec = Math.round((Date.now() - conn.lastPong) / 1000);
+
+        if (silenceSec > 30) {
+            // 30s of total silence — connection is truly dead
+            console.error(`[Secure] Connection dead (${silenceSec}s silent): ${conn.deviceName}`);
             conn.close();
             clearInterval(conn.heartbeatInfo);
             return;
         }
 
-        // Send Ping
+        if (silenceSec > 10 && !conn.isSleeping) {
+            // Phone likely went to sleep — log once, keep pinging
+            conn.isSleeping = true;
+            console.log(`[Secure] ${conn.deviceName} appears to be sleeping, waiting patiently...`);
+        }
+
+        if (silenceSec <= 10 && conn.isSleeping) {
+            // Phone woke up and responded
+            conn.isSleeping = false;
+            console.log(`[Secure] ${conn.deviceName} woke up! Connection alive.`);
+        }
+
+        // Always keep pinging (3s) — keeps NAT alive & gives phone something
+        // to respond to the instant it wakes up
         if (conn.open) {
             conn.send({ type: 'ping' });
         }
-    }, 5000);
+    }, 3000);
 
-    // Clean up on close
+    // Clean up on close (PeerJS fires this on real ICE/DTLS failure)
     conn.on('close', () => {
         if (conn.heartbeatInfo) clearInterval(conn.heartbeatInfo);
     });
@@ -336,10 +353,35 @@ function initSecurePeer(hostId) {
 
         conn.on('close', () => {
             console.log('[Secure] Connection closed');
-            updateGlobalStatus();
+            // If this was an authenticated device, show reconnecting state
+            if (conn.isAuthenticated && conn.deviceName) {
+                console.log(`[Secure] Waiting for ${conn.deviceName} to reconnect...`);
+                updateStatus('Reconnecting', `Waiting for ${conn.deviceName}...`);
+                el.deviceBadge.style.display = 'inline-flex';
+                el.qrSection.style.display = 'none';
+                // Fall back to normal "Waiting" after 60s if no reconnect
+                conn.reconnectTimeout = setTimeout(() => {
+                    console.log('[Secure] Reconnect timeout — returning to waiting state');
+                    updateGlobalStatus();
+                }, 60000);
+            } else {
+                updateGlobalStatus();
+            }
         });
 
         conn.on('error', (err) => console.error('[Secure] Conn Error:', err));
+    });
+
+    // When a new connection arrives, clear any pending reconnect timeout
+    peerSecure.on('connection', function clearReconnectTimer() {
+        if (peerSecure && peerSecure.connections) {
+            Object.values(peerSecure.connections).flat().forEach(c => {
+                if (c.reconnectTimeout) {
+                    clearTimeout(c.reconnectTimeout);
+                    c.reconnectTimeout = null;
+                }
+            });
+        }
     });
 
     // Auto-reconnect to signaling server (keeps call capability alive)
