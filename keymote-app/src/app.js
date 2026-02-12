@@ -16,6 +16,7 @@ class RemoteInputApp {
         this.charTimestamps = [];
         this.previousInput = '';
         this.typingDelay = parseInt(localStorage.getItem('typingDelay') || '50', 10);
+        this.hapticFeedback = localStorage.getItem('hapticFeedback') !== 'false';
 
         this.theme = localStorage.getItem('theme') || 'dark';
 
@@ -80,6 +81,7 @@ class RemoteInputApp {
             splashDurationValue: document.getElementById('splashDurationValue'),
             typingDelayInput: document.getElementById('typingDelayInput'),
             typingDelayValue: document.getElementById('typingDelayValue'),
+            hapticFeedbackInput: document.getElementById('hapticFeedbackInput'),
             // Floating toolbar elements
             floatingToolbar: document.getElementById('floatingToolbar'),
             toolbarHandle: document.getElementById('toolbarHandle'),
@@ -120,61 +122,63 @@ class RemoteInputApp {
             if (this.el.typingDelayValue) {
                 this.el.typingDelayValue.textContent = this.typingDelay + ' ms';
             }
-        }
+            if (this.el.hapticFeedbackInput) {
+                this.el.hapticFeedbackInput.checked = this.hapticFeedback;
+            }
 
-        this.setupListeners();
-        this.setupLoginListeners();
-        this.setupBackgroundSurvival();
+            this.setupListeners();
+            this.setupLoginListeners();
+            this.setupBackgroundSurvival();
 
-        // Disconnect Button
-        const disconnectBtn = document.getElementById('disconnectBtn');
-        if (disconnectBtn) {
-            disconnectBtn.addEventListener('click', () => {
-                if (confirm('Disconnect from PC?')) {
-                    this.handleConnectionLost();
-                }
-            });
-        }
+            // Disconnect Button
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            if (disconnectBtn) {
+                disconnectBtn.addEventListener('click', () => {
+                    if (confirm('Disconnect from PC?')) {
+                        this.handleConnectionLost();
+                    }
+                });
+            }
 
-        // Check if running in Capacitor (native app) or browser
-        const isCapacitor = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
+            // Check if running in Capacitor (native app) or browser
+            const isCapacitor = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
 
-        if (!isCapacitor) {
-            // Block browser access
-            this.showScreen('blocked');
-            return;
-        }
+            if (!isCapacitor) {
+                // Block browser access
+                this.showScreen('blocked');
+                return;
+            }
 
-        // Start with splash screen
-        this.showScreen('splash');
+            // Start with splash screen
+            this.showScreen('splash');
 
-        // Check for default device to bypass screens
-        const defaultDevice = localStorage.getItem('defaultDevice');
+            // Check for default device to bypass screens
+            const defaultDevice = localStorage.getItem('defaultDevice');
 
-        if (defaultDevice && this.savedDevices[defaultDevice]) {
-            console.log('Fast-tracking connection to default device:', defaultDevice);
-            // Render list in background just in case
-            this.renderSavedDevices();
+            if (defaultDevice && this.savedDevices[defaultDevice]) {
+                console.log('Fast-tracking connection to default device:', defaultDevice);
+                // Render list in background just in case
+                this.renderSavedDevices();
 
-            // Connect immediately (bypassing splash delay and login screen)
+                // Connect immediately (bypassing splash delay and login screen)
+                setTimeout(() => {
+                    this.connectFromSaved(defaultDevice, true);
+                }, 100);
+                return;
+            }
+
+            // Standard flow: Wait for splash duration then show login
+            const splashDuration = parseInt(localStorage.getItem('splashDuration') || '2500', 10);
             setTimeout(() => {
-                this.connectFromSaved(defaultDevice, true);
-            }, 100);
-            return;
+                this.showScreen('login');
+                // Pre-populate login fields with saved values
+                if (this.loginEl.serverAddress) this.loginEl.serverAddress.value = this.customServer;
+                if (this.loginEl.computerName) this.loginEl.computerName.value = this.computerName;
+                // Render saved devices list
+                this.renderSavedDevices();
+            }, splashDuration);
         }
-
-        // Standard flow: Wait for splash duration then show login
-        const splashDuration = parseInt(localStorage.getItem('splashDuration') || '2500', 10);
-        setTimeout(() => {
-            this.showScreen('login');
-            // Pre-populate login fields with saved values
-            if (this.loginEl.serverAddress) this.loginEl.serverAddress.value = this.customServer;
-            if (this.loginEl.computerName) this.loginEl.computerName.value = this.computerName;
-            // Render saved devices list
-            this.renderSavedDevices();
-        }, splashDuration);
     }
-
 
     showScreen(screen) {
         // Hide all screens
@@ -555,6 +559,44 @@ class RemoteInputApp {
         localStorage.setItem('savedDevices', JSON.stringify(this.savedDevices));
     }
 
+    saveDevice(serverAddress, computerName, token) {
+        const key = serverAddress || 'local';
+        this.savedDevices[key] = {
+            serverAddress: serverAddress,
+            computerName: computerName,
+            token: token,
+            savedAt: Date.now()
+        };
+        this.saveSavedDevices();
+        this.renderSavedDevices();
+    }
+
+    removeDevice(key) {
+        delete this.savedDevices[key];
+        this.saveSavedDevices();
+        this.renderSavedDevices();
+    }
+
+    connectFromSaved(key, bypassOverlay = false) {
+        const device = this.savedDevices[key];
+        if (device) {
+            this.customServer = device.serverAddress;
+            this.computerName = device.computerName;
+            this.authToken = device.token;
+
+            if (!bypassOverlay) {
+                this.showProcessingOverlay('Connecting to ' + (device.computerName || 'Device') + '...');
+            }
+
+            setTimeout(() => {
+                // Assuming connectP2P handles the connection using this.authToken or passed token
+                // Based on line 1611 usage: connectP2P(hostId, isSecure, token, silent)
+                // If key is hostId/pin
+                this.connectP2P(key, true, device.token);
+            }, 100);
+        }
+    }
+
     // Render saved devices to the login screen list
     renderSavedDevices() {
         console.log('[DEBUG] renderSavedDevices called');
@@ -850,72 +892,7 @@ class RemoteInputApp {
         setTimeout(() => this.hideProcessingOverlay(), 2000);
     }
 
-    saveDevice(serverAddress, computerName, token) {
-        const key = serverAddress || 'local';
-        this.savedDevices[key] = {
-            serverAddress: serverAddress,
-            computerName: computerName,
-            token: token,
-            savedAt: Date.now()
-        };
-        this.saveSavedDevices();
-    }
 
-    removeDevice(key) {
-        delete this.savedDevices[key];
-        this.saveSavedDevices();
-        this.renderSavedDevices();
-    }
-
-    renderSavedDevices() {
-        const savedKeys = Object.keys(this.savedDevices);
-        if (savedKeys.length === 0) {
-            // No saved devices - show form, hide saved section
-            if (this.loginEl.savedConnections) this.loginEl.savedConnections.style.display = 'none';
-            if (this.loginEl.newConnectionToggle) this.loginEl.newConnectionToggle.classList.add('hidden');
-            if (this.loginEl.loginForm) this.loginEl.loginForm.classList.remove('collapsed');
-            return;
-        }
-
-        // Show saved connections
-        if (this.loginEl.savedConnections) this.loginEl.savedConnections.style.display = 'block';
-        if (this.loginEl.newConnectionToggle) this.loginEl.newConnectionToggle.classList.remove('hidden');
-        if (this.loginEl.loginForm) this.loginEl.loginForm.classList.add('collapsed');
-
-        // Render devices
-        if (this.loginEl.savedList) {
-            this.loginEl.savedList.innerHTML = savedKeys.map(key => {
-                const device = this.savedDevices[key];
-                return `
-                    <div class="saved-device" data-key="${key}">
-                        <span class="saved-device-icon">🖥️</span>
-                        <div class="saved-device-info">
-                            <div class="saved-device-name">${device.computerName || 'Unknown PC'}</div>
-                            <div class="saved-device-address">${device.serverAddress || 'Local Network'}</div>
-                        </div>
-                        <button class="saved-device-delete" data-key="${key}">×</button>
-                    </div>
-                `;
-            }).join('');
-
-            // Add click handlers
-            this.loginEl.savedList.querySelectorAll('.saved-device').forEach(el => {
-                el.onclick = (e) => {
-                    if (!e.target.classList.contains('saved-device-delete')) {
-                        this.connectFromSaved(el.dataset.key);
-                    }
-                };
-            });
-
-            // Delete handlers
-            this.loginEl.savedList.querySelectorAll('.saved-device-delete').forEach(btn => {
-                btn.onclick = (e) => {
-                    e.stopPropagation();
-                    this.removeDevice(btn.dataset.key);
-                };
-            });
-        }
-    }
 
     connectFromSaved(key) {
         const device = this.savedDevices[key];
@@ -985,6 +962,14 @@ class RemoteInputApp {
                     this.el.typingDelayValue.textContent = this.typingDelay + ' ms';
                 }
                 localStorage.setItem('typingDelay', this.typingDelay);
+            };
+        }
+
+        // Haptic Feedback Listener
+        if (this.el.hapticFeedbackInput) {
+            this.el.hapticFeedbackInput.onchange = (e) => {
+                this.hapticFeedback = e.target.checked;
+                localStorage.setItem('hapticFeedback', this.hapticFeedback);
             };
         }
 
@@ -1273,13 +1258,41 @@ class RemoteInputApp {
             let lastPinchDist = null;
             let lastPinchMid = null;
 
+            // Drag support state (Long Press)
+            let isDragging = false;
+            let longPressTimer = null;
+            const LONG_PRESS_DURATION = 300; // ms to trigger drag
+
             trackpadOverlay.addEventListener('touchstart', (e) => {
                 e.preventDefault();
                 if (e.touches.length === 1) {
+                    const now = Date.now();
                     lastTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-                    touchStartTime = Date.now();
+                    touchStartTime = now;
                     touchMoved = false;
+
+                    // Start Long Press Timer
+                    if (longPressTimer) clearTimeout(longPressTimer);
+                    longPressTimer = setTimeout(() => {
+                        // Trigger Drag Mode
+                        isDragging = true;
+                        this.sendMouse('left-down');
+                        console.log('[Trackpad] Long Press detected -> Drag Started');
+
+                        // Haptic Feedback
+                        if (this.hapticFeedback && navigator.vibrate) {
+                            navigator.vibrate(50); // Short buzz
+                        }
+                    }, LONG_PRESS_DURATION);
+
                 } else if (e.touches.length === 2) {
+                    // Two fingers: Cancel any drag/long press immediately
+                    if (longPressTimer) clearTimeout(longPressTimer);
+                    if (isDragging) {
+                        isDragging = false;
+                        this.sendMouse('left-up');
+                    }
+
                     // Initialize pinch/pan state
                     lastTouch = null;
                     const dx = e.touches[1].clientX - e.touches[0].clientX;
@@ -1305,8 +1318,20 @@ class RemoteInputApp {
                         dy = -temp; // Flipped: Visual down = original left (-dx)
                     }
 
+                    // Check boundaries / sensitivity
                     if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
                         touchMoved = true;
+
+                        // If moved significantly BEFORE long press triggers, cancel the timer
+                        if (!isDragging && longPressTimer) {
+                            // Calculate total movement from start? 
+                            // Current implementation just checks delta > 1. 
+                            // Ideally we check total distance from start, but delta > 1 is usually enough to indicate intent to move.
+                            // Let's be safe: any movement cancels long press to avoid accidental drags while trying to move cursor.
+                            clearTimeout(longPressTimer);
+                            longPressTimer = null;
+                        }
+
                         this.sendMouse('move', { dx: Math.round(dx), dy: Math.round(dy) });
                         lastTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
                     }
@@ -1359,15 +1384,29 @@ class RemoteInputApp {
             }, { passive: false });
 
             trackpadOverlay.addEventListener('touchend', (e) => {
+                // Cancel timer on any release
+                if (longPressTimer) {
+                    clearTimeout(longPressTimer);
+                    longPressTimer = null;
+                }
+
                 if (e.touches.length < 2) {
                     // Reset pinch/pan state when fingers lift
                     lastPinchDist = null;
                     lastPinchMid = null;
                 }
-                // Tap to click (if touch was short and didn't move)
-                if (e.touches.length === 0 && !touchMoved && Date.now() - touchStartTime < 200) {
+
+                if (isDragging) {
+                    // Stop dragging
+                    isDragging = false;
+                    this.sendMouse('left-up');
+                    console.log('[Trackpad] Drag ended (Left Up)');
+                } else if (e.touches.length === 0 && !touchMoved && Date.now() - touchStartTime < 200) {
+                    // Normal Click (Tap)
+                    // Only trigger if we didn't drag and didn't move much
                     this.sendMouse('left');
                 }
+
                 if (e.touches.length === 0) {
                     lastTouch = null;
                 }

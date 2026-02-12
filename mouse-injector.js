@@ -44,6 +44,14 @@ public class MouseSim {
         mouse_event(LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
         mouse_event(LEFTUP, 0, 0, 0, UIntPtr.Zero);
     }
+
+    public static void LeftDown() {
+        mouse_event(LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+    }
+
+    public static void LeftUp() {
+        mouse_event(LEFTUP, 0, 0, 0, UIntPtr.Zero);
+    }
     
     public static void Right() {
         mouse_event(RIGHTDOWN, 0, 0, 0, UIntPtr.Zero);
@@ -75,6 +83,8 @@ while ($true) {
             "move" { [MouseSim]::MoveBy([int]$parts[1], [int]$parts[2]) }
             "moveto" { [MouseSim]::MoveTo([int]$parts[1], [int]$parts[2]) }
             "left" { [MouseSim]::Left() }
+            "left-down" { [MouseSim]::LeftDown() }
+            "left-up" { [MouseSim]::LeftUp() }
             "right" { [MouseSim]::Right() }
             "middle" { [MouseSim]::Middle() }
             "scroll" { [MouseSim]::Scroll([int]$parts[1]) }
@@ -161,6 +171,16 @@ function leftClick() {
     return true;
 }
 
+function leftDown() {
+    sendCommand('left-down');
+    return true;
+}
+
+function leftUp() {
+    sendCommand('left-up');
+    return true;
+}
+
 function rightClick() {
     sendCommand('right');
     return true;
@@ -181,6 +201,8 @@ function handleMouseEvent(event) {
         case 'move': return move(event.dx || 0, event.dy || 0);
         case 'moveto': return moveTo(event.x || 0, event.y || 0);
         case 'left': return leftClick();
+        case 'left-down': return leftDown();
+        case 'left-up': return leftUp();
         case 'right': return rightClick();
         case 'middle': return middleClick();
         case 'scroll': return scroll(event.delta || 0);
@@ -199,4 +221,4 @@ function cleanup() {
     }
 }
 
-module.exports = { initialize, move, moveTo, leftClick, rightClick, middleClick, scroll, handleMouseEvent, cleanup };
+module.exports = { initialize, move, moveTo, leftClick, leftDown, leftUp, rightClick, middleClick, scroll, handleMouseEvent, cleanup };
