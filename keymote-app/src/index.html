@@ -207,7 +207,13 @@
         <div class="mouse-section">
             <div class="section-header">
                 <span>📺 Screen Share</span>
-                <button id="toggleMouse" class="toggle-btn">Show</button>
+                <div style="display:flex;gap:6px;align-items:center;">
+                    <label style="font-size:10px;color:var(--text2);display:flex;align-items:center;gap:4px;cursor:pointer;">
+                        <input type="checkbox" id="videoOnlyToggle" style="width:14px;height:14px;">
+                        Video only
+                    </label>
+                    <button id="toggleMouse" class="toggle-btn">Show</button>
+                </div>
             </div>
             <div class="mouse-container" id="mouseContainer" style="display:none;">
                 <!-- Screen Viewer / Trackpad -->

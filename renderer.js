@@ -331,7 +331,7 @@ function initSecurePeer(hostId) {
 
             // Screen Share Request
             if (data && (data.type === 'screen' || data.type === 'screen-req') && data.action === 'start') {
-                startScreenShare(conn.peer);
+                startScreenShare(conn.peer, 0, data.videoOnly || false);
             }
             if (data && (data.type === 'screen' || data.type === 'screen-req') && data.action === 'stop') {
                 stopScreenShare();
@@ -465,18 +465,220 @@ let activeScreenStream = null;
 let screenHasAudio = false;
 let screenShareRetryTimer = null;
 
-async function startScreenShare(recipientPeerId, retryCount = 0) {
+// Auto-reconnect state
+let screenShareRecipient = null;
+let screenShareAutoReconnect = true;
+
+// Multi-monitor state
+let selectedSourceId = null;
+
+// Video-only state
+let screenShareVideoOnly = false;
+
+// Adaptive quality state
+let statsInterval = null;
+let currentMaxFps = 30;
+let lastBytesSent = 0;
+let lastStatsTimestamp = 0;
+let consecutivePoorReadings = 0;
+let consecutiveGoodReadings = 0;
+let currentRtt = null;
+
+// --- Adaptive Quality Functions ---
+
+function applyFpsConstraint(fps) {
+    if (!activeScreenStream) return;
+    const videoTrack = activeScreenStream.getVideoTracks()[0];
+    if (!videoTrack) return;
+
+    try {
+        videoTrack.applyConstraints({
+            frameRate: { max: fps, ideal: fps }
+        });
+        currentMaxFps = fps;
+        console.log(`[Adaptive] FPS set to ${fps}`);
+        broadcastToAuthenticated({ type: 'quality-update', fps: fps });
+    } catch (err) {
+        console.warn('[Adaptive] Failed to apply FPS constraint:', err);
+    }
+}
+
+function startAdaptiveQuality() {
+    if (statsInterval) clearInterval(statsInterval);
+    lastBytesSent = 0;
+    lastStatsTimestamp = 0;
+    consecutivePoorReadings = 0;
+    consecutiveGoodReadings = 0;
+    currentRtt = null;
+
+    statsInterval = setInterval(async () => {
+        if (!activeScreenCall || !activeScreenCall.peerConnection) return;
+
+        try {
+            const stats = await activeScreenCall.peerConnection.getStats();
+            stats.forEach(report => {
+                // Get RTT from candidate pair
+                if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                    currentRtt = report.currentRoundTripTime
+                        ? Math.round(report.currentRoundTripTime * 1000)
+                        : null;
+                }
+
+                // Get bitrate from outbound video RTP
+                if (report.type === 'outbound-rtp' && report.kind === 'video') {
+                    const now = report.timestamp;
+                    const bytes = report.bytesSent;
+
+                    if (lastStatsTimestamp > 0) {
+                        const timeDelta = (now - lastStatsTimestamp) / 1000;
+                        const bitrate = ((bytes - lastBytesSent) * 8) / timeDelta;
+                        const kbps = bitrate / 1000;
+
+                        // Adapt FPS based on bitrate
+                        if (kbps < 200) {
+                            consecutivePoorReadings++;
+                            consecutiveGoodReadings = 0;
+                            if (consecutivePoorReadings >= 3 && currentMaxFps > 2) {
+                                const newFps = Math.max(2, Math.floor(currentMaxFps / 2));
+                                applyFpsConstraint(newFps);
+                                consecutivePoorReadings = 0;
+                            }
+                        } else if (kbps > 500) {
+                            consecutiveGoodReadings++;
+                            consecutivePoorReadings = 0;
+                            if (consecutiveGoodReadings >= 5 && currentMaxFps < 30) {
+                                const newFps = Math.min(30, currentMaxFps * 2);
+                                applyFpsConstraint(newFps);
+                                consecutiveGoodReadings = 0;
+                            }
+                        } else {
+                            consecutivePoorReadings = 0;
+                            consecutiveGoodReadings = 0;
+                        }
+
+                        // Broadcast stats to mobile
+                        broadcastToAuthenticated({
+                            type: 'webrtc-stats',
+                            bitrate: Math.round(kbps),
+                            fps: currentMaxFps,
+                            rtt: currentRtt,
+                            timestamp: Date.now()
+                        });
+                    }
+
+                    lastBytesSent = bytes;
+                    lastStatsTimestamp = now;
+                }
+            });
+        } catch (err) {
+            console.warn('[Adaptive] Stats error:', err);
+        }
+    }, 3000);
+}
+
+function stopAdaptiveQuality() {
+    if (statsInterval) {
+        clearInterval(statsInterval);
+        statsInterval = null;
+    }
+    currentMaxFps = 30;
+}
+
+// --- Monitor Picker ---
+
+async function showMonitorPicker() {
+    const sources = await window.electronAPI.getSources();
+    if (!sources || sources.length === 0) return null;
+    if (sources.length === 1) return sources[0].id;
+
+    return new Promise((resolve) => {
+        const modal = document.createElement('div');
+        modal.id = 'monitorPickerModal';
+        modal.style.cssText = `position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);
+            display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;`;
+
+        const title = document.createElement('h3');
+        title.textContent = 'Select Monitor to Share';
+        title.style.cssText = 'color:#fff;margin-bottom:16px;font-size:14px;';
+        modal.appendChild(title);
+
+        const grid = document.createElement('div');
+        grid.style.cssText = 'display:flex;gap:12px;flex-wrap:wrap;justify-content:center;';
+
+        sources.forEach((source, i) => {
+            const card = document.createElement('div');
+            card.style.cssText = `cursor:pointer;border:2px solid #333;border-radius:8px;padding:8px;
+                text-align:center;transition:border-color 0.2s;background:#1a1a1e;`;
+            card.onmouseenter = () => card.style.borderColor = '#6366f1';
+            card.onmouseleave = () => card.style.borderColor = '#333';
+
+            const img = document.createElement('img');
+            img.src = source.thumbnail;
+            img.style.cssText = 'width:120px;height:auto;border-radius:4px;';
+            card.appendChild(img);
+
+            const label = document.createElement('div');
+            label.textContent = source.name || `Screen ${i + 1}`;
+            label.style.cssText = 'color:#f5f5f7;font-size:11px;margin-top:6px;';
+            card.appendChild(label);
+
+            card.onclick = () => {
+                document.body.removeChild(modal);
+                resolve(source.id);
+            };
+
+            grid.appendChild(card);
+        });
+
+        modal.appendChild(grid);
+
+        const cancel = document.createElement('button');
+        cancel.textContent = 'Cancel';
+        cancel.style.cssText = `margin-top:16px;padding:8px 20px;background:#333;color:#fff;
+            border:none;border-radius:6px;cursor:pointer;font-size:12px;`;
+        cancel.onclick = () => {
+            document.body.removeChild(modal);
+            resolve(null);
+        };
+        modal.appendChild(cancel);
+
+        document.body.appendChild(modal);
+    });
+}
+
+// --- Screen Share Core ---
+
+async function startScreenShare(recipientPeerId, retryCount = 0, videoOnly = false) {
     // Mutual exclusion: stop audio share if active
     stopAudioShare();
 
     if (retryCount === 0) stopScreenShare(); // Clean up any existing share
     if (screenShareRetryTimer) { clearTimeout(screenShareRetryTimer); screenShareRetryTimer = null; }
 
+    // Track recipient and settings for auto-reconnect / retries
+    screenShareRecipient = recipientPeerId;
+    screenShareAutoReconnect = true;
+    if (retryCount === 0) screenShareVideoOnly = videoOnly;
+
     try {
         const sources = await window.electronAPI.getSources();
         if (!sources || sources.length === 0) return;
 
-        const source = sources[0];
+        // Multi-monitor selection
+        let source;
+        if (retryCount > 0 && selectedSourceId) {
+            // On retry, reuse previously selected source
+            source = sources.find(s => s.id === selectedSourceId) || sources[0];
+        } else if (sources.length > 1) {
+            // Multiple monitors: show picker
+            const pickedId = await showMonitorPicker();
+            if (!pickedId) return; // User cancelled
+            source = sources.find(s => s.id === pickedId) || sources[0];
+        } else {
+            source = sources[0];
+        }
+        selectedSourceId = source.id;
+
         const videoStream = await navigator.mediaDevices.getUserMedia({
             audio: false,
             video: {
@@ -491,16 +693,20 @@ async function startScreenShare(recipientPeerId, retryCount = 0) {
             }
         });
 
-        // Try to add system audio
-        const audioStream = await getSystemAudioStream();
+        // Add system audio unless video-only mode
         screenHasAudio = false;
-        if (audioStream) {
-            audioStream.getAudioTracks().forEach(t => videoStream.addTrack(t));
-            screenHasAudio = true;
-            window.electronAPI.setSystemMute(true);
-            console.log('[Renderer] Screen share with system audio (PC muted)');
+        if (!screenShareVideoOnly) {
+            const audioStream = await getSystemAudioStream();
+            if (audioStream) {
+                audioStream.getAudioTracks().forEach(t => videoStream.addTrack(t));
+                screenHasAudio = true;
+                window.electronAPI.setSystemMute(true);
+                console.log('[Renderer] Screen share with system audio (PC muted)');
+            } else {
+                console.log('[Renderer] Screen share without audio (not available)');
+            }
         } else {
-            console.log('[Renderer] Screen share without audio (not available)');
+            console.log('[Renderer] Video-only screen share (no audio)');
         }
 
         activeScreenStream = videoStream;
@@ -510,8 +716,31 @@ async function startScreenShare(recipientPeerId, retryCount = 0) {
             window.electronAPI.sendCursorControl('start');
         }
 
+        // Monitor video track for unexpected ending (auto-reconnect)
+        const videoTrack = videoStream.getVideoTracks()[0];
+        if (videoTrack) {
+            videoTrack.onended = () => {
+                console.warn('[Renderer] Screen share video track ended unexpectedly');
+                if (screenShareAutoReconnect && screenShareRecipient) {
+                    console.log('[Renderer] Auto-restarting screen share in 1s...');
+                    cleanupScreenShare();
+                    screenShareRetryTimer = setTimeout(() => {
+                        startScreenShare(screenShareRecipient, 0, screenShareVideoOnly);
+                    }, 1000);
+                }
+            };
+        }
+
         activeScreenCall.on('close', () => {
+            const wasSharing = !!activeScreenStream;
             cleanupScreenShare();
+            // Auto-reconnect if the call closed unexpectedly
+            if (wasSharing && screenShareAutoReconnect && screenShareRecipient) {
+                console.log('[Renderer] Screen share call closed, auto-restarting in 2s...');
+                screenShareRetryTimer = setTimeout(() => {
+                    startScreenShare(screenShareRecipient, 0, screenShareVideoOnly);
+                }, 2000);
+            }
         });
 
         activeScreenCall.on('error', (err) => {
@@ -520,9 +749,12 @@ async function startScreenShare(recipientPeerId, retryCount = 0) {
             if (retryCount < 2) {
                 const delay = (retryCount + 1) * 2000;
                 console.log(`[Renderer] Retrying screen share in ${delay / 1000}s (attempt ${retryCount + 2}/3)...`);
-                screenShareRetryTimer = setTimeout(() => startScreenShare(recipientPeerId, retryCount + 1), delay);
+                screenShareRetryTimer = setTimeout(() => startScreenShare(recipientPeerId, retryCount + 1, screenShareVideoOnly), delay);
             }
         });
+
+        // Start adaptive quality monitoring
+        startAdaptiveQuality();
     } catch (err) {
         console.error('[Renderer] Screen Share Failed:', err);
         cleanupScreenShare();
@@ -531,6 +763,7 @@ async function startScreenShare(recipientPeerId, retryCount = 0) {
 
 function cleanupScreenShare() {
     if (!activeScreenStream && !activeScreenCall) return;
+    stopAdaptiveQuality();
     if (activeScreenStream) {
         activeScreenStream.getTracks().forEach(t => t.stop());
         activeScreenStream = null;
@@ -543,15 +776,19 @@ function cleanupScreenShare() {
         window.electronAPI.sendCursorControl('stop');
     }
     activeScreenCall = null;
+    // Do NOT reset screenShareRecipient here — auto-reconnect needs it
     console.log('[Renderer] Screen share stopped');
 }
 
 function stopScreenShare() {
+    screenShareAutoReconnect = false; // Intentional stop — no auto-reconnect
     if (screenShareRetryTimer) { clearTimeout(screenShareRetryTimer); screenShareRetryTimer = null; }
     if (activeScreenCall) {
         activeScreenCall.close();
     }
     cleanupScreenShare();
+    screenShareRecipient = null;
+    selectedSourceId = null;
 }
 
 // Audio-only sharing (system audio without screen)

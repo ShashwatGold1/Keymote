@@ -1032,7 +1032,8 @@ class RemoteInputApp {
                     this.stopAudioShareUI();
                 }
 
-                this.send({ type: 'screen', action: hidden ? 'start' : 'stop' });
+                const videoOnly = document.getElementById('videoOnlyToggle')?.checked || false;
+                this.send({ type: 'screen', action: hidden ? 'start' : 'stop', videoOnly: videoOnly });
 
                 const hint = document.getElementById('trackpadHint');
                 if (hint) hint.style.display = this.isStreaming ? 'none' : 'flex';
@@ -1279,10 +1280,8 @@ class RemoteInputApp {
                         this.sendMouse('left-down');
                         console.log('[Trackpad] Long Press detected -> Drag Started');
 
-                        // Haptic Feedback
-                        if (this.hapticFeedback && navigator.vibrate) {
-                            navigator.vibrate(50); // Short buzz
-                        }
+                        // Haptic Feedback — strong pulse for drag start
+                        this.haptic(100);
                     }, LONG_PRESS_DURATION);
 
                 } else if (e.touches.length === 2) {
@@ -1536,6 +1535,19 @@ class RemoteInputApp {
                             this.screenWidth = video.videoWidth;
                             this.screenHeight = video.videoHeight;
                         };
+
+                        // Monitor for track ending (desktop auto-reconnect will restart)
+                        stream.getVideoTracks().forEach(track => {
+                            track.onended = () => {
+                                console.warn('[P2P] Remote video track ended');
+                                video.style.display = 'none';
+                                const hint = document.getElementById('trackpadHint');
+                                if (hint) {
+                                    hint.textContent = 'Reconnecting screen share...';
+                                    hint.style.display = 'flex';
+                                }
+                            };
+                        });
                     }
                 }
             });
@@ -2229,6 +2241,25 @@ class RemoteInputApp {
                 return;
             }
 
+            // Adaptive quality updates from desktop
+            if (m.type === 'quality-update') {
+                console.log(`[Quality] Desktop FPS: ${m.fps}`);
+                return;
+            }
+
+            // WebRTC stats from desktop — update connection health indicator
+            if (m.type === 'webrtc-stats') {
+                const quality = m.bitrate > 500 ? 'good' : m.bitrate > 200 ? 'fair' : 'poor';
+                if (this.el.latency) {
+                    this.el.latency.title = `Bitrate: ${m.bitrate}kbps | FPS: ${m.fps} | Quality: ${quality}`;
+                }
+                if (this.el.connBtn) {
+                    this.el.connBtn.classList.remove('quality-good', 'quality-fair', 'quality-poor');
+                    this.el.connBtn.classList.add('quality-' + quality);
+                }
+                return;
+            }
+
             if (m.type === 'pong') {
                 this.latencies.push(Date.now() - m.time);
                 if (this.latencies.length > 10) this.latencies.shift();
@@ -2321,6 +2352,23 @@ class RemoteInputApp {
             if (this.hasModifiers()) this.releaseMods();
         }
     }
+    // Haptic feedback — uses native Capacitor Haptics for strong vibration
+    haptic(ms = 100) {
+        if (!this.hapticFeedback) return;
+        try {
+            const Haptics = window.Capacitor?.Plugins?.Haptics;
+            if (Haptics) {
+                // Use impact HEAVY for max vibration intensity (amplitude 255)
+                Haptics.impact({ style: 'HEAVY' }).catch(() => {});
+                return;
+            }
+            console.warn('[Haptic] Capacitor Haptics plugin not found, falling back to navigator.vibrate');
+        } catch (e) {
+            console.warn('[Haptic] Error accessing Capacitor Haptics:', e);
+        }
+        if (navigator.vibrate) navigator.vibrate(ms);
+    }
+
     sendKey(k) { this.send({ type: 'key', key: k, modifiers: this.getMods() }); this.releaseMods(); }
     sendShortcut(s) {
         const parts = s.toLowerCase().split('+');

@@ -241,6 +241,19 @@ body {
     background: var(--red);
 }
 
+/* Adaptive quality indicators (from WebRTC stats) */
+.connection-btn.quality-good .conn-dot {
+    background: #22c55e;
+}
+
+.connection-btn.quality-fair .conn-dot {
+    background: #f59e0b;
+}
+
+.connection-btn.quality-poor .conn-dot {
+    background: #ef4444;
+}
+
 #connectionText {
     font-size: 10px;
     color: var(--header-conn-text);
