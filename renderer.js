@@ -26,6 +26,35 @@ const el = {
     startupToggle: document.getElementById('startupToggle')
 };
 
+// Connection Event Logger - Diagnostic data collection
+const connectionLog = {
+    events: [],
+    maxEvents: 200,
+
+    log(eventType, data = {}) {
+        const event = {
+            timestamp: new Date().toISOString(),
+            eventType,
+            ...data
+        };
+        this.events.push(event);
+        if (this.events.length > this.maxEvents) this.events.shift();
+        console.log(`[ConnLog] ${eventType}:`, data);
+    },
+
+    getRecent(count = 20) {
+        return this.events.slice(-count);
+    },
+
+    export() {
+        return JSON.stringify(this.events, null, 2);
+    },
+
+    clear() {
+        this.events = [];
+    }
+};
+
 // Store server info for reconnection
 let lastServerInfo = null;
 let peerDiscovery = null; // PIN-based (Discovery)
@@ -153,14 +182,33 @@ function initDualPeers(info) {
     initSecurePeer(info.hostId);
 }
 
-// Peer Configuration
+// Peer Configuration with TURN relay for network switching resilience
 const peerConfig = {
     debug: 1,
     config: {
         iceServers: [
+            // STUN servers for NAT discovery (direct connection preferred)
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-        ]
+            { urls: 'stun:stun1.l.google.com:19302' },
+            // TURN servers for relay (fallback through restrictive NAT/firewalls)
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            }
+        ],
+        // Prioritize direct connections, fallback to TURN relay
+        iceTransportPolicy: 'all'
     }
 };
 
@@ -175,6 +223,7 @@ function initDiscoveryPeer(pin) {
 
     peerDiscovery.on('open', (id) => {
         console.log('[Discovery] Ready:', id);
+        connectionLog.log('discovery_ready', { peerId: id });
     });
 
     peerDiscovery.on('connection', (conn) => {
@@ -183,6 +232,7 @@ function initDiscoveryPeer(pin) {
         conn.on('data', async (data) => {
             if (data && data.type === 'pair-request') {
                 console.log('[Discovery] Pairing Request from:', data.deviceName);
+                connectionLog.log('pairing_request', { deviceName: data.deviceName, deviceId: data.deviceId });
 
                 // Generate Token via Main Process
                 const token = await window.electronAPI.generateToken({
@@ -198,6 +248,7 @@ function initDiscoveryPeer(pin) {
                 });
 
                 console.log('[Discovery] Pairing successful. Token sent.');
+                connectionLog.log('pairing_success', { deviceName: data.deviceName, hostId: lastServerInfo.hostId });
 
                 // Close discovery connection (client should reconnect to Secure Peer)
                 setTimeout(() => conn.close(), 1000);
@@ -226,26 +277,34 @@ function startHeartbeat(conn) {
     if (conn.heartbeatInfo) clearInterval(conn.heartbeatInfo);
 
     conn.lastPong = Date.now();
+    conn.lastPing = Date.now();
     conn.isSleeping = false;
 
     conn.heartbeatInfo = setInterval(() => {
-        const silenceSec = Math.round((Date.now() - conn.lastPong) / 1000);
+        const pongSilenceSec = Math.round((Date.now() - conn.lastPong) / 1000);
+        const pingSilenceSec = conn.lastPing ? Math.round((Date.now() - conn.lastPing) / 1000) : 999;
 
-        if (silenceSec > 30) {
-            // 30s of total silence — connection is truly dead
-            console.error(`[Secure] Connection dead (${silenceSec}s silent): ${conn.deviceName}`);
+        // Check BOTH directions: pongs we're receiving AND pings mobile is sending
+        // If EITHER direction is dead for 30s, the connection is dead
+        const maxSilence = Math.max(pongSilenceSec, pingSilenceSec);
+
+        if (maxSilence > 30) {
+            // 30s of silence in either direction — connection is truly dead
+            const deadDirection = pongSilenceSec > 30 ? 'no_pong_response' : 'no_ping_from_mobile';
+            console.error(`[Secure] Connection dead (${maxSilence}s silent, direction: ${deadDirection}): ${conn.deviceName}`);
+            connectionLog.log('heartbeat_timeout', { deviceName: conn.deviceName, maxSilence, pongSilenceSec, pingSilenceSec, deadDirection });
             conn.close();
             clearInterval(conn.heartbeatInfo);
             return;
         }
 
-        if (silenceSec > 10 && !conn.isSleeping) {
+        if (maxSilence > 10 && !conn.isSleeping) {
             // Phone likely went to sleep — log once, keep pinging
             conn.isSleeping = true;
             console.log(`[Secure] ${conn.deviceName} appears to be sleeping, waiting patiently...`);
         }
 
-        if (silenceSec <= 10 && conn.isSleeping) {
+        if (maxSilence <= 10 && conn.isSleeping) {
             // Phone woke up and responded
             conn.isSleeping = false;
             console.log(`[Secure] ${conn.deviceName} woke up! Connection alive.`);
@@ -275,6 +334,7 @@ function initSecurePeer(hostId) {
 
     peerSecure.on('open', (id) => {
         console.log('[Secure] Ready:', id);
+        connectionLog.log('secure_ready', { peerId: id });
         // Show "Internet Ready" badge
         const publicBadge = document.createElement('span');
         publicBadge.className = 'status-detail';
@@ -292,11 +352,12 @@ function initSecurePeer(hostId) {
         conn.on('data', async (data) => {
             // Heartbeat (Ping/Pong) - Handle both sides
             if (data && data.type === 'ping') {
+                conn.lastPing = Date.now(); // Track incoming pings from mobile
                 conn.send({ type: 'pong', time: Date.now() });
                 return;
             }
             if (data && data.type === 'pong') {
-                conn.lastPong = Date.now(); // Track pong receipt
+                conn.lastPong = Date.now(); // Track pong receipt (desktop sent ping, got response)
                 return;
             }
 
@@ -311,6 +372,7 @@ function initSecurePeer(hostId) {
                     conn.isAuthenticated = true;
                     conn.deviceName = data.deviceName || 'Unknown';
                     console.log(`[Secure] Authenticated: ${conn.deviceName}`);
+                    connectionLog.log('auth_success', { deviceName: conn.deviceName, deviceId: data.deviceId });
                     conn.send({ type: 'auth-result', success: true });
                     updateGlobalStatus();
 
@@ -353,6 +415,7 @@ function initSecurePeer(hostId) {
 
         conn.on('close', () => {
             console.log('[Secure] Connection closed');
+            connectionLog.log('connection_closed', { deviceName: conn.deviceName || 'unknown', isAuthenticated: conn.isAuthenticated });
             // If this was an authenticated device, show reconnecting state
             if (conn.isAuthenticated && conn.deviceName) {
                 console.log(`[Secure] Waiting for ${conn.deviceName} to reconnect...`);

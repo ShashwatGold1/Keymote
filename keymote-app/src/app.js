@@ -1,3 +1,32 @@
+// Connection Event Logger - Diagnostic data collection
+const connectionLog = {
+    events: [],
+    maxEvents: 200,
+
+    log(eventType, data = {}) {
+        const event = {
+            timestamp: new Date().toISOString(),
+            eventType,
+            ...data
+        };
+        this.events.push(event);
+        if (this.events.length > this.maxEvents) this.events.shift();
+        console.log(`[ConnLog] ${eventType}:`, data);
+    },
+
+    getRecent(count = 20) {
+        return this.events.slice(-count);
+    },
+
+    export() {
+        return JSON.stringify(this.events, null, 2);
+    },
+
+    clear() {
+        this.events = [];
+    }
+};
+
 class RemoteInputApp {
     constructor() {
         this.ws = null;
@@ -1495,15 +1524,34 @@ class RemoteInputApp {
             this.showProcessingOverlay(isSecure ? 'Verifying Security Token...' : 'Pairing with Device...');
         }
 
-        // Initialize Peer
+        // Initialize Peer with TURN relay for network switching resilience
         if (this.peer) this.peer.destroy();
         this.peer = new Peer({
             debug: 1,
             config: {
                 iceServers: [
+                    // STUN servers for NAT discovery (direct connection preferred)
                     { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' }
-                ]
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    // TURN servers for relay (fallback through restrictive NAT/firewalls)
+                    {
+                        urls: 'turn:openrelay.metered.ca:80',
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                    },
+                    {
+                        urls: 'turn:openrelay.metered.ca:443',
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                    },
+                    {
+                        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                    }
+                ],
+                // Prioritize direct connections, fallback to TURN relay
+                iceTransportPolicy: 'all'
             }
         });
 
@@ -1555,10 +1603,38 @@ class RemoteInputApp {
 
         this.peer.on('open', (id) => {
             console.log('[P2P] My Peer ID:', id);
+            connectionLog.log('peer_open', { peerId: id, isSecure });
             const conn = this.peer.connect(targetId);
 
+            // Connection timeout with retry logic (30s timeout, exponential backoff)
+            const connectTimeout = setTimeout(() => {
+                if (!this.isConnected || !this.isAuthenticated) {
+                    console.error('[P2P] Connection timeout - no response in 30s');
+                    connectionLog.log('connect_timeout', { targetId, isSecure });
+
+                    // Retry with exponential backoff: 2s, 4s, 8s (max 3 attempts)
+                    this.connectionAttempts = (this.connectionAttempts || 0) + 1;
+                    if (this.connectionAttempts <= 3) {
+                        const delay = 2000 * Math.pow(2, this.connectionAttempts - 1);
+                        console.log(`[P2P] Retrying in ${delay / 1000}s (attempt ${this.connectionAttempts}/3)...`);
+                        this.updateLoginStatus(`Reconnecting (attempt ${this.connectionAttempts}/3)...`, 'connecting');
+                        this.showProcessingOverlay(`Retrying connection... (${this.connectionAttempts}/3)`);
+                        setTimeout(() => {
+                            this.connectP2P(targetId, isSecure, token, silent);
+                        }, delay);
+                    } else {
+                        console.error('[P2P] Max connection attempts reached');
+                        this.showErrorOverlay('Connection timeout - please try again');
+                        this.connectionAttempts = 0;
+                    }
+                }
+            }, 30000);
+
             conn.on('open', () => {
+                clearTimeout(connectTimeout); // Cancel timeout on success
+                this.connectionAttempts = 0; // Reset on successful connection
                 console.log('[P2P] Data Channel Open');
+                connectionLog.log('data_channel_open', { targetId, isSecure });
                 this.p2pConn = conn;
 
                 if (isSecure) {
@@ -1573,6 +1649,7 @@ class RemoteInputApp {
                 } else {
                     // --- PAIRING FLOW ---
                     console.log('[P2P] Sending Pairing Request...');
+                    connectionLog.log('pairing_sent', { deviceId: this.deviceId, isSecure: false });
                     conn.send({
                         type: 'pair-request',
                         deviceId: this.deviceId,
@@ -1585,22 +1662,23 @@ class RemoteInputApp {
                 // Handle Handshake Responses
                 if (data.type === 'pair-success') {
                     console.log('[P2P] Pairing Successful! Token received.');
+                    connectionLog.log('pair_success', { hostId: data.hostId });
                     // Save credentials
                     this.saveDevice(data.hostId, this.computerName, data.token);
 
                     // Disconnect Discovery Peer
                     conn.close();
 
-                    // Reconnect using Secure Channel
-                    setTimeout(() => {
-                        this.connectP2P(data.hostId, true, data.token, silent);
-                    }, 500);
+                    // Immediately reconnect using Secure Channel (no artificial delay)
+                    // Timeout and retry logic handled in connectP2P
+                    this.connectP2P(data.hostId, true, data.token, silent);
                     return;
                 }
 
                 if (data.type === 'auth-result') {
                     if (data.success) {
                         console.log('[P2P] Auth Successful!');
+                        connectionLog.log('auth_success', { computerName: this.computerName });
                         this.isConnected = true;
                         this.isAuthenticated = true;
                         this.autoReconnectAttempts = 0; // Reset reconnect counter on success
@@ -1628,6 +1706,7 @@ class RemoteInputApp {
 
             conn.on('close', () => {
                 console.log('[P2P] Closed');
+                connectionLog.log('connection_closed', { reason: 'peer_closed', isSecure });
                 this.isConnected = false;
                 this.updateStatus('error', 'Disconnected');
                 if (this.isAuthenticated) this.handleConnectionLost(); // Only if we were fully connected
@@ -1838,6 +1917,7 @@ class RemoteInputApp {
 
                     if (this.missedPongs >= 4) {
                         console.error('[Ping] Connection lost - disconnecting');
+                        connectionLog.log('heartbeat_timeout', { missedPongs: this.missedPongs, timeSinceLastPong });
                         this.handleConnectionLost();
                     }
                 } else {
@@ -1984,6 +2064,7 @@ class RemoteInputApp {
     handleResume() {
         const bgDuration = this.backgroundTimestamp ? Date.now() - this.backgroundTimestamp : 0;
         console.log(`[Background] Resuming after ${Math.round(bgDuration / 1000)}s`);
+        connectionLog.log('resume', { bgDuration: Math.round(bgDuration / 1000) });
         this.backgroundTimestamp = null;
 
         // Re-acquire wake lock (Android releases it on background)
@@ -1991,29 +2072,42 @@ class RemoteInputApp {
             this.acquireWakeLock();
         }
 
-        // Reset heartbeat timers to prevent false-positive death detection
+        // CRITICAL: Stop regular ping interval to avoid race with probe ping
+        if (this.pingInt) {
+            clearInterval(this.pingInt);
+            this.pingInt = null;
+        }
+
+        // Reset heartbeat validation state
         this.lastPongTime = Date.now();
         this.missedPongs = 0;
 
         if (this.isConnected && this.p2pConn) {
             if (this.p2pConn.open) {
-                // Connection object says it's open - verify with a fast ping probe
+                // Connection object says it's open - verify with a single probe ping (no interval ping racing)
                 console.log('[Background] Sending probe ping...');
                 this.p2pConn.send({ type: 'ping', time: Date.now() });
 
-                // If no pong in 5s after resume, connection is dead - reconnect
+                // If no pong in 8 seconds after resume, connection is dead - reconnect
+                // (8s gives more margin than 5s - avoids timing-dependent false disconnects)
                 if (this.resumeProbeTimer) clearTimeout(this.resumeProbeTimer);
                 this.resumeProbeTimer = setTimeout(() => {
-                    if (Date.now() - this.lastPongTime > 4500) {
+                    const timeSincePong = Date.now() - this.lastPongTime;
+                    if (timeSincePong > 7000) {
                         console.warn('[Background] Probe failed - no pong after resume, reconnecting...');
+                        connectionLog.log('probe_timeout', { timeSincePong });
                         this.handleConnectionLost();
                     } else {
                         console.log('[Background] Probe succeeded - connection alive');
+                        connectionLog.log('probe_success', { timeSincePong });
+                        // Restart regular ping interval now that probe is done
+                        this.startPing();
                     }
-                }, 5000);
+                }, 8000);
             } else {
                 // Connection is already closed, reconnect immediately
                 console.warn('[Background] Connection closed during background, reconnecting...');
+                connectionLog.log('background_connection_closed', {});
                 this.handleConnectionLost();
             }
         } else if (!this.isConnected) {
