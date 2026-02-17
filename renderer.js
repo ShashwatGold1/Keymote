@@ -182,47 +182,32 @@ function initDualPeers(info) {
     initSecurePeer(info.hostId);
 }
 
-// =============================================
-// PEER CONFIGURATION — Keep in sync with keymote-app/src/app.js
-// =============================================
-
-// ICE servers for WebRTC connectivity (STUN for NAT discovery, TURN for relay fallback)
-const ICE_SERVERS = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    {
-        urls: 'turn:openrelay.metered.ca:80',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-    },
-    {
-        urls: 'turn:openrelay.metered.ca:443',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-    },
-    {
-        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-    }
-];
-
-// PeerJS signaling server config
-// Default (commented out) uses 0.peerjs.com — public, rate-limited, not recommended for production
-// To self-host: npx peerjs --port 9000, then uncomment and set your server below
-// See: https://github.com/peers/peerjs-server
-const SIGNALING_SERVER = {
-    // host: 'your-peerjs-server.example.com',
-    // port: 443,
-    // path: '/myapp',
-    // secure: true
-};
-
+// Peer Configuration with TURN relay for network switching resilience
 const peerConfig = {
     debug: 1,
-    ...SIGNALING_SERVER,
     config: {
-        iceServers: ICE_SERVERS,
+        iceServers: [
+            // STUN servers for NAT discovery (direct connection preferred)
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            // TURN servers for relay (fallback through restrictive NAT/firewalls)
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            }
+        ],
+        // Prioritize direct connections, fallback to TURN relay
         iceTransportPolicy: 'all'
     }
 };
@@ -265,11 +250,8 @@ function initDiscoveryPeer(pin) {
                 console.log('[Discovery] Pairing successful. Token sent.');
                 connectionLog.log('pairing_success', { deviceName: data.deviceName, hostId: lastServerInfo.hostId });
 
-                // Close discovery connection after giving mobile time to receive the response.
-                // Mobile closes from its side first; this is a safety cleanup.
-                setTimeout(() => {
-                    if (conn.open) conn.close();
-                }, 5000);
+                // Close discovery connection (client should reconnect to Secure Peer)
+                setTimeout(() => conn.close(), 1000);
             }
         });
     });
@@ -354,12 +336,6 @@ function initSecurePeer(hostId) {
             if (!conn.isAuthenticated) return;
 
             // --- Authenticated Logic Below ---
-
-            // Liveness probe: respond to ping with pong
-            if (data && data.type === 'ping') {
-                conn.send({ type: 'pong', ts: data.ts });
-                return;
-            }
 
             // Screen Share Request
             if (data && (data.type === 'screen' || data.type === 'screen-req') && data.action === 'start') {

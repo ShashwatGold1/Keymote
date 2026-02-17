@@ -1,46 +1,3 @@
-// =============================================
-// PEER CONFIGURATION — Keep in sync with renderer.js (desktop)
-// =============================================
-
-const ICE_SERVERS = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    {
-        urls: 'turn:openrelay.metered.ca:80',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-    },
-    {
-        urls: 'turn:openrelay.metered.ca:443',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-    },
-    {
-        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-    }
-];
-
-// PeerJS signaling server config — must match desktop's renderer.js
-// Default (commented out) uses 0.peerjs.com — public, rate-limited
-// See: https://github.com/peers/peerjs-server
-const SIGNALING_SERVER = {
-    // host: 'your-peerjs-server.example.com',
-    // port: 443,
-    // path: '/myapp',
-    // secure: true
-};
-
-const PEER_CONFIG = {
-    debug: 1,
-    ...SIGNALING_SERVER,
-    config: {
-        iceServers: ICE_SERVERS,
-        iceTransportPolicy: 'all'
-    }
-};
-
 // Connection Event Logger - Diagnostic data collection
 const connectionLog = {
     events: [],
@@ -1575,9 +1532,36 @@ class RemoteInputApp {
             this.showProcessingOverlay(isSecure ? 'Verifying Security Token...' : 'Pairing with Device...');
         }
 
-        // Use shared peer config (ICE + signaling server defined at top of file)
+        // Initialize Peer with TURN relay for network switching resilience
         if (this.peer) this.peer.destroy();
-        this.peer = new Peer(PEER_CONFIG);
+        this.peer = new Peer({
+            debug: 1,
+            config: {
+                iceServers: [
+                    // STUN servers for NAT discovery (direct connection preferred)
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    // TURN servers for relay (fallback through restrictive NAT/firewalls)
+                    {
+                        urls: 'turn:openrelay.metered.ca:80',
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                    },
+                    {
+                        urls: 'turn:openrelay.metered.ca:443',
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                    },
+                    {
+                        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                    }
+                ],
+                // Prioritize direct connections, fallback to TURN relay
+                iceTransportPolicy: 'all'
+            }
+        });
 
         this.peer.on('call', (call) => {
             const isAudioOnly = call.metadata && call.metadata.type === 'audio-only';
@@ -1644,8 +1628,7 @@ class RemoteInputApp {
                         this.updateLoginStatus(`Reconnecting (attempt ${this.connectionAttempts}/3)...`, 'connecting');
                         this.showProcessingOverlay(`Retrying connection... (${this.connectionAttempts}/3)`);
                         setTimeout(() => {
-                            // Use original pinOrHostId, NOT targetId (which already has keymote- prefix)
-                            this.connectP2P(pinOrHostId, isSecure, token, silent);
+                            this.connectP2P(targetId, isSecure, token, silent);
                         }, delay);
                     } else {
                         console.error('[P2P] Max connection attempts reached');
@@ -1698,28 +1681,12 @@ class RemoteInputApp {
                         console.log('[P2P] Device saved. User can change default from saved devices list (star icon).');
                     }
 
-                    // Close discovery channel from our side
+                    // Disconnect Discovery Peer
                     conn.close();
 
-                    // Wait for discovery peer to fully tear down before starting secure connection.
-                    // This avoids a race where the new Peer registers on the signaling server
-                    // while the old one hasn't fully disconnected yet.
-                    const secureHostId = data.hostId;
-                    const secureToken = data.token;
-                    const attemptSecure = (attempt = 1) => {
-                        console.log(`[P2P] Secure connection attempt ${attempt}/3...`);
-                        this.connectP2P(secureHostId, true, secureToken, silent);
-                        // connectP2P has its own 30s timeout + retry, but we add a
-                        // fast-fail check: if peer fails to open within 10s, retry here
-                        this._secureHandoffTimer = setTimeout(() => {
-                            if (!this.isConnected && !this.isAuthenticated && attempt < 3) {
-                                console.warn(`[P2P] Secure handoff attempt ${attempt} failed, retrying...`);
-                                attemptSecure(attempt + 1);
-                            }
-                        }, 10000);
-                    };
-                    // Small delay to let discovery cleanup complete
-                    setTimeout(() => attemptSecure(1), 500);
+                    // Immediately reconnect using Secure Channel (no artificial delay)
+                    // Timeout and retry logic handled in connectP2P
+                    this.connectP2P(data.hostId, true, data.token, silent);
                     return;
                 }
 
@@ -1730,11 +1697,6 @@ class RemoteInputApp {
                         this.isConnected = true;
                         this.isAuthenticated = true;
                         this.autoReconnectAttempts = 0; // Reset reconnect counter on success
-                        // Clear handoff retry timer (discovery→secure transition complete)
-                        if (this._secureHandoffTimer) {
-                            clearTimeout(this._secureHandoffTimer);
-                            this._secureHandoffTimer = null;
-                        }
 
                         this.updateStatus('connected', 'Connected (Secure)');
                         if (!silent) {
@@ -1927,16 +1889,12 @@ class RemoteInputApp {
     }
 
     disconnect() {
+        if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+        }
         this.isConnected = false;
         this.isAuthenticated = false;
-        if (this.p2pConn) {
-            this.p2pConn.close();
-            this.p2pConn = null;
-        }
-        if (this.peer) {
-            this.peer.destroy();
-            this.peer = null;
-        }
         this.onConnectionTornDown();
     }
 
@@ -2114,45 +2072,17 @@ class RemoteInputApp {
             this.acquireWakeLock();
         }
 
-        // Check connection liveness after resume using active probe
-        // PeerJS's conn.open property can be stale after Android suspends the process,
-        // so we send a ping and wait for a pong to verify the channel actually works.
+        // Check connection status after resume
         if (this.isConnected && this.p2pConn) {
-            // First check: is the underlying data channel actually open?
-            const dc = this.p2pConn.dataChannel;
-            const dcState = dc ? dc.readyState : 'unknown';
-            console.log(`[Background] DataChannel readyState: ${dcState}, conn.open: ${this.p2pConn.open}`);
-
-            if (dcState === 'closed' || dcState === 'closing' || !this.p2pConn.open) {
-                // Definitely dead — reconnect immediately
-                console.warn('[Background] Connection dead after background, reconnecting...');
-                connectionLog.log('background_connection_dead', { dcState });
-                this.handleConnectionLost();
+            if (this.p2pConn.open) {
+                // Connection is open, stays connected
+                console.log('[Background] Connection still open after resume');
+                connectionLog.log('resume_connected', {});
             } else {
-                // DataChannel reports open, but verify with a ping/pong probe
-                console.log('[Background] DataChannel looks open, sending liveness probe...');
-                this._lastPongTime = 0;
-                try {
-                    this.send({ type: 'ping', ts: Date.now() });
-                } catch (e) {
-                    console.warn('[Background] Ping send failed:', e);
-                    this.handleConnectionLost();
-                    return;
-                }
-
-                // Wait up to 5s for a pong response (handled in handleMessage)
-                const probeTimer = setTimeout(() => {
-                    if (this._lastPongTime === 0) {
-                        console.warn('[Background] No pong received in 5s — connection is dead');
-                        connectionLog.log('probe_timeout', { bgDuration: Math.round(bgDuration / 1000) });
-                        this.handleConnectionLost();
-                    } else {
-                        console.log('[Background] Pong received — connection verified alive');
-                        connectionLog.log('probe_success', {});
-                    }
-                }, 5000);
-                // Store timer so it can be cleaned up if connection tears down
-                this._resumeProbeTimer = probeTimer;
+                // Connection is closed, reconnect
+                console.warn('[Background] Connection closed during background, reconnecting...');
+                connectionLog.log('background_connection_closed', {});
+                this.handleConnectionLost();
             }
         } else if (!this.isConnected) {
             // Not connected, try auto-reconnect to saved device
@@ -2214,13 +2144,9 @@ class RemoteInputApp {
         this.releaseWakeLock();
         this.stopKeepAliveAudio();
         this.stopForegroundService();
-        if (this._resumeProbeTimer) {
-            clearTimeout(this._resumeProbeTimer);
-            this._resumeProbeTimer = null;
-        }
-        if (this._secureHandoffTimer) {
-            clearTimeout(this._secureHandoffTimer);
-            this._secureHandoffTimer = null;
+        if (this.resumeProbeTimer) {
+            clearTimeout(this.resumeProbeTimer);
+            this.resumeProbeTimer = null;
         }
     }
 
@@ -2297,12 +2223,84 @@ class RemoteInputApp {
         const screenViewer = document.getElementById('screenViewer');
 
         try {
-            // P2P mode: data arrives as raw objects
+            // Handle both P2P objects (raw) and WebSocket strings (JSON)
             const m = (typeof data === 'string') ? JSON.parse(data) : data;
 
-            // Liveness probe response from desktop
-            if (m.type === 'pong') {
-                this._lastPongTime = Date.now();
+            // Handle server connection response
+            if (m.type === 'connected') {
+                this.authRequired = m.authRequired;
+                if (!m.authRequired) {
+                    // No auth required, we're connected - show main app
+                    this.isAuthenticated = true;
+                    this.updateStatus('connected', 'Connected');
+                    this.updateLoginStatus('Connected!', 'success');
+                    this.showScreen('main');
+                } else {
+                    // Auth required - try token first, then PIN
+                    if (this.pendingToken) {
+                        // Try token auth
+                        this.send({
+                            type: 'auth',
+                            token: this.pendingToken,
+                            deviceId: this.deviceId
+                        });
+                        this.updateLoginStatus('Connecting with saved credentials...', 'connecting');
+                    } else if (this.pendingPin) {
+                        // PIN auth with rememberMe
+                        this.send({
+                            type: 'auth',
+                            pin: this.pendingPin,
+                            computerName: this.computerName,
+                            rememberMe: this.pendingRememberMe,
+                            deviceId: this.deviceId
+                        });
+                        this.pendingPin = null;
+                        this.updateLoginStatus('Authenticating...', 'connecting');
+                    } else {
+                        // No PIN or token, update login screen
+                        this.updateLoginStatus('PIN required', 'error');
+                    }
+                }
+                return;
+            }
+
+            // Handle auth result
+            if (m.type === 'auth_result') {
+                if (m.success) {
+                    this.isAuthenticated = true;
+                    this.updateStatus('connected', 'Connected');
+                    this.updateLoginStatus('Authenticated!', 'success');
+
+                    // Save device if token was returned (rememberMe was true)
+                    if (m.token) {
+                        const computerName = m.computerName || this.computerName;
+                        this.saveDevice(this.customServer, computerName, m.token);
+                        // Set as default ONLY if this is the first device
+                        if (!localStorage.getItem('defaultDevice')) {
+                            this.setDefaultDevice(this.customServer || 'local');
+                        }
+                    }
+
+                    // Clear pending data
+                    this.pendingToken = null;
+                    this.pendingRememberMe = false;
+
+                    // Show main app after successful auth
+                    setTimeout(() => this.showScreen('main'), 500);
+                } else {
+                    // Auth failed
+                    this.pendingToken = null; // Clear invalid token
+
+                    // If token expired, remove from saved and prompt for PIN
+                    if (m.requirePin) {
+                        const key = this.customServer || 'local';
+                        this.removeDevice(key);
+                        this.updateLoginStatus('Session expired. Enter PIN to reconnect.', 'error');
+                    } else {
+                        this.updateStatus('error', m.error || 'Auth failed');
+                        this.updateLoginStatus(m.error || 'Authentication failed', 'error');
+                    }
+                }
                 return;
             }
 
