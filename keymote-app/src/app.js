@@ -1,3 +1,46 @@
+// =============================================
+// PEER CONFIGURATION — Keep in sync with renderer.js (desktop)
+// =============================================
+
+const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+    },
+    {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+    },
+    {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+    }
+];
+
+// PeerJS signaling server config — must match desktop's renderer.js
+// Default (commented out) uses 0.peerjs.com — public, rate-limited
+// See: https://github.com/peers/peerjs-server
+const SIGNALING_SERVER = {
+    // host: 'your-peerjs-server.example.com',
+    // port: 443,
+    // path: '/myapp',
+    // secure: true
+};
+
+const PEER_CONFIG = {
+    debug: 1,
+    ...SIGNALING_SERVER,
+    config: {
+        iceServers: ICE_SERVERS,
+        iceTransportPolicy: 'all'
+    }
+};
+
 // Connection Event Logger - Diagnostic data collection
 const connectionLog = {
     events: [],
@@ -164,39 +207,47 @@ class RemoteInputApp {
             if (disconnectBtn) {
                 disconnectBtn.addEventListener('click', () => {
                     if (confirm('Disconnect from PC?')) {
-                        this.handleConnectionLost();
+                        this.logout();
                     }
                 });
             }
 
-            // Check if running in Capacitor (native app) or browser
+            // Browser and native app both supported ✅
             const isCapacitor = window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform();
-
-            if (!isCapacitor) {
-                // Block browser access
-                this.showScreen('blocked');
-                return;
-            }
+            console.log('[Init] Platform:', isCapacitor ? 'Native App' : 'Browser');
 
             // Start with splash screen
             this.showScreen('splash');
 
-            // Check for default device to bypass screens
+            // Check for default device to show main page immediately
             const defaultDevice = localStorage.getItem('defaultDevice');
+            console.log('[Init] defaultDevice:', defaultDevice, 'savedDevices:', Object.keys(this.savedDevices));
+
+            // ONE-TIME FIX: If user has a saved device but no defaultDevice set (from old sessions)
+            if (!defaultDevice && Object.keys(this.savedDevices).length === 1) {
+                const onlyDevice = Object.keys(this.savedDevices)[0];
+                console.log('[Init] Auto-setting single saved device as default:', onlyDevice);
+                this.setDefaultDevice(onlyDevice);
+                defaultDevice = onlyDevice;
+            }
 
             if (defaultDevice && this.savedDevices[defaultDevice]) {
-                console.log('Fast-tracking connection to default device:', defaultDevice);
-                // Render list in background just in case
-                this.renderSavedDevices();
-
-                // Connect immediately (bypassing splash delay and login screen)
+                console.log('[Init] Fast-tracking connection to default device:', defaultDevice);
+                // Show main page quickly with "Connecting..." status
+                const splashDuration = parseInt(localStorage.getItem('splashDuration') || '1000', 10);
+                console.log('[Init] Showing main page after', splashDuration, 'ms splash');
                 setTimeout(() => {
+                    console.log('[Init] Timeout fired, showing main page now');
+                    this.showScreen('main');
+                    this.updateStatus('error', 'Connecting...');
+                    console.log('[Init] Calling connectFromSaved with silent=true');
+                    // Connect in background (silent mode - no overlays)
                     this.connectFromSaved(defaultDevice, true);
-                }, 100);
+                }, splashDuration);
                 return;
             }
 
-            // Standard flow: Wait for splash duration then show login
+            // No saved device: Show login screen after splash
             const splashDuration = parseInt(localStorage.getItem('splashDuration') || '2500', 10);
             setTimeout(() => {
                 this.showScreen('login');
@@ -1524,36 +1575,9 @@ class RemoteInputApp {
             this.showProcessingOverlay(isSecure ? 'Verifying Security Token...' : 'Pairing with Device...');
         }
 
-        // Initialize Peer with TURN relay for network switching resilience
+        // Use shared peer config (ICE + signaling server defined at top of file)
         if (this.peer) this.peer.destroy();
-        this.peer = new Peer({
-            debug: 1,
-            config: {
-                iceServers: [
-                    // STUN servers for NAT discovery (direct connection preferred)
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' },
-                    // TURN servers for relay (fallback through restrictive NAT/firewalls)
-                    {
-                        urls: 'turn:openrelay.metered.ca:80',
-                        username: 'openrelayproject',
-                        credential: 'openrelayproject'
-                    },
-                    {
-                        urls: 'turn:openrelay.metered.ca:443',
-                        username: 'openrelayproject',
-                        credential: 'openrelayproject'
-                    },
-                    {
-                        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-                        username: 'openrelayproject',
-                        credential: 'openrelayproject'
-                    }
-                ],
-                // Prioritize direct connections, fallback to TURN relay
-                iceTransportPolicy: 'all'
-            }
-        });
+        this.peer = new Peer(PEER_CONFIG);
 
         this.peer.on('call', (call) => {
             const isAudioOnly = call.metadata && call.metadata.type === 'audio-only';
@@ -1620,7 +1644,8 @@ class RemoteInputApp {
                         this.updateLoginStatus(`Reconnecting (attempt ${this.connectionAttempts}/3)...`, 'connecting');
                         this.showProcessingOverlay(`Retrying connection... (${this.connectionAttempts}/3)`);
                         setTimeout(() => {
-                            this.connectP2P(targetId, isSecure, token, silent);
+                            // Use original pinOrHostId, NOT targetId (which already has keymote- prefix)
+                            this.connectP2P(pinOrHostId, isSecure, token, silent);
                         }, delay);
                     } else {
                         console.error('[P2P] Max connection attempts reached');
@@ -1665,13 +1690,36 @@ class RemoteInputApp {
                     connectionLog.log('pair_success', { hostId: data.hostId });
                     // Save credentials
                     this.saveDevice(data.hostId, this.computerName, data.token);
+                    // Set as default ONLY if this is the first device
+                    if (!localStorage.getItem('defaultDevice')) {
+                        this.setDefaultDevice(data.hostId);
+                        console.log('[P2P] Set as default device (first device)');
+                    } else {
+                        console.log('[P2P] Device saved. User can change default from saved devices list (star icon).');
+                    }
 
-                    // Disconnect Discovery Peer
+                    // Close discovery channel from our side
                     conn.close();
 
-                    // Immediately reconnect using Secure Channel (no artificial delay)
-                    // Timeout and retry logic handled in connectP2P
-                    this.connectP2P(data.hostId, true, data.token, silent);
+                    // Wait for discovery peer to fully tear down before starting secure connection.
+                    // This avoids a race where the new Peer registers on the signaling server
+                    // while the old one hasn't fully disconnected yet.
+                    const secureHostId = data.hostId;
+                    const secureToken = data.token;
+                    const attemptSecure = (attempt = 1) => {
+                        console.log(`[P2P] Secure connection attempt ${attempt}/3...`);
+                        this.connectP2P(secureHostId, true, secureToken, silent);
+                        // connectP2P has its own 30s timeout + retry, but we add a
+                        // fast-fail check: if peer fails to open within 10s, retry here
+                        this._secureHandoffTimer = setTimeout(() => {
+                            if (!this.isConnected && !this.isAuthenticated && attempt < 3) {
+                                console.warn(`[P2P] Secure handoff attempt ${attempt} failed, retrying...`);
+                                attemptSecure(attempt + 1);
+                            }
+                        }, 10000);
+                    };
+                    // Small delay to let discovery cleanup complete
+                    setTimeout(() => attemptSecure(1), 500);
                     return;
                 }
 
@@ -1682,16 +1730,24 @@ class RemoteInputApp {
                         this.isConnected = true;
                         this.isAuthenticated = true;
                         this.autoReconnectAttempts = 0; // Reset reconnect counter on success
+                        // Clear handoff retry timer (discovery→secure transition complete)
+                        if (this._secureHandoffTimer) {
+                            clearTimeout(this._secureHandoffTimer);
+                            this._secureHandoffTimer = null;
+                        }
 
                         this.updateStatus('connected', 'Connected (Secure)');
                         if (!silent) {
                             this.updateLoginStatus('Connected securely!', 'success');
                             this.showSuccessOverlay('Connected!');
+                            // Show main screen after success overlay (for login flow)
+                            setTimeout(() => this.showScreen('main'), 500);
+                        } else {
+                            // Silent mode: already on main page, just update status (done above)
+                            console.log('[P2P] Background reconnect succeeded, already on main page');
                         }
 
-                        this.startPing();
                         this.onConnectionEstablished();
-                        setTimeout(() => this.showScreen('main'), 500);
                     } else {
                         console.error('[P2P] Auth Failed:', data.error);
                         this.updateLoginStatus('Auth Failed: ' + data.error, 'error');
@@ -1709,7 +1765,7 @@ class RemoteInputApp {
                 connectionLog.log('connection_closed', { reason: 'peer_closed', isSecure });
                 this.isConnected = false;
                 this.updateStatus('error', 'Disconnected');
-                if (this.isAuthenticated) this.handleConnectionLost(); // Only if we were fully connected
+                this.handleConnectionLost(); // Handle reconnect regardless of auth state
             });
 
             conn.on('error', (err) => {
@@ -1871,14 +1927,41 @@ class RemoteInputApp {
     }
 
     disconnect() {
-        if (this.ws) {
-            this.ws.close();
-            this.ws = null;
-        }
         this.isConnected = false;
         this.isAuthenticated = false;
-        this.stopPing();
+        if (this.p2pConn) {
+            this.p2pConn.close();
+            this.p2pConn = null;
+        }
+        if (this.peer) {
+            this.peer.destroy();
+            this.peer = null;
+        }
         this.onConnectionTornDown();
+    }
+
+    // Explicit user-initiated logout (when clicking X button in header)
+    logout() {
+        console.log('[Logout] User explicitly logged out');
+        this.onConnectionTornDown();
+        this.isConnected = false;
+        this.isAuthenticated = false;
+        if (this.p2pConn) {
+            this.p2pConn.close();
+            this.p2pConn = null;
+        }
+        if (this.peer) {
+            this.peer.destroy();
+            this.peer = null;
+        }
+        if (this.autoReconnectTimer) {
+            clearTimeout(this.autoReconnectTimer);
+            this.autoReconnectTimer = null;
+        }
+        this.autoReconnectAttempts = 0;
+        this.updateStatus('error', 'Logged Out');
+        this.showScreen('login');
+        this.renderSavedDevices();
     }
 
     scheduleReconnect() {
@@ -1896,44 +1979,7 @@ class RemoteInputApp {
     }
 
     // Ping-Pong Heartbeat System
-    startPing() {
-        if (this.pingInt) clearInterval(this.pingInt);
-        this.lastPongTime = Date.now();
-        this.missedPongs = 0;
-
-        // Send ping every 5 seconds (matches desktop rhythm, keeps NAT alive)
-        this.pingInt = setInterval(() => {
-            if (this.isConnected && this.isAuthenticated) {
-                // Send ping
-                if (this.p2pConn && this.p2pConn.open) {
-                    this.p2pConn.send({ type: 'ping', time: Date.now() });
-                }
-
-                // Check if we've received a pong recently
-                const timeSinceLastPong = Date.now() - this.lastPongTime;
-                if (timeSinceLastPong > 25000) { // 25s without pong
-                    this.missedPongs++;
-                    console.warn(`[Ping] Missed pong #${this.missedPongs}`);
-
-                    if (this.missedPongs >= 4) {
-                        console.error('[Ping] Connection lost - disconnecting');
-                        connectionLog.log('heartbeat_timeout', { missedPongs: this.missedPongs, timeSinceLastPong });
-                        this.handleConnectionLost();
-                    }
-                } else {
-                    this.missedPongs = 0; // Reset on successful pong
-                }
-            }
-        }, 5000);
-        console.log('[Ping] Started P2P heartbeat service');
-    }
-
-    stopPing() {
-        if (this.pingInt) {
-            clearInterval(this.pingInt);
-            this.pingInt = null;
-        }
-    }
+    // REMOVED: startPing() and stopPing() - relying on real WebRTC close/error events instead
 
     // =============================================
     // BACKGROUND SURVIVAL SYSTEM
@@ -2054,11 +2100,7 @@ class RemoteInputApp {
     handleBackground() {
         this.backgroundTimestamp = Date.now();
         console.log('[Background] Entering background, connection state:', this.isConnected);
-
-        // Send a last ping before going to background
-        if (this.isConnected && this.p2pConn && this.p2pConn.open) {
-            this.p2pConn.send({ type: 'ping', time: Date.now() });
-        }
+        connectionLog.log('background', { isConnected: this.isConnected });
     }
 
     handleResume() {
@@ -2072,46 +2114,48 @@ class RemoteInputApp {
             this.acquireWakeLock();
         }
 
-        // CRITICAL: Stop regular ping interval to avoid race with probe ping
-        if (this.pingInt) {
-            clearInterval(this.pingInt);
-            this.pingInt = null;
-        }
-
-        // Reset heartbeat validation state
-        this.lastPongTime = Date.now();
-        this.missedPongs = 0;
-
+        // Check connection liveness after resume using active probe
+        // PeerJS's conn.open property can be stale after Android suspends the process,
+        // so we send a ping and wait for a pong to verify the channel actually works.
         if (this.isConnected && this.p2pConn) {
-            if (this.p2pConn.open) {
-                // Connection object says it's open - verify with a single probe ping (no interval ping racing)
-                console.log('[Background] Sending probe ping...');
-                this.p2pConn.send({ type: 'ping', time: Date.now() });
+            // First check: is the underlying data channel actually open?
+            const dc = this.p2pConn.dataChannel;
+            const dcState = dc ? dc.readyState : 'unknown';
+            console.log(`[Background] DataChannel readyState: ${dcState}, conn.open: ${this.p2pConn.open}`);
 
-                // If no pong in 8 seconds after resume, connection is dead - reconnect
-                // (8s gives more margin than 5s - avoids timing-dependent false disconnects)
-                if (this.resumeProbeTimer) clearTimeout(this.resumeProbeTimer);
-                this.resumeProbeTimer = setTimeout(() => {
-                    const timeSincePong = Date.now() - this.lastPongTime;
-                    if (timeSincePong > 7000) {
-                        console.warn('[Background] Probe failed - no pong after resume, reconnecting...');
-                        connectionLog.log('probe_timeout', { timeSincePong });
+            if (dcState === 'closed' || dcState === 'closing' || !this.p2pConn.open) {
+                // Definitely dead — reconnect immediately
+                console.warn('[Background] Connection dead after background, reconnecting...');
+                connectionLog.log('background_connection_dead', { dcState });
+                this.handleConnectionLost();
+            } else {
+                // DataChannel reports open, but verify with a ping/pong probe
+                console.log('[Background] DataChannel looks open, sending liveness probe...');
+                this._lastPongTime = 0;
+                try {
+                    this.send({ type: 'ping', ts: Date.now() });
+                } catch (e) {
+                    console.warn('[Background] Ping send failed:', e);
+                    this.handleConnectionLost();
+                    return;
+                }
+
+                // Wait up to 5s for a pong response (handled in handleMessage)
+                const probeTimer = setTimeout(() => {
+                    if (this._lastPongTime === 0) {
+                        console.warn('[Background] No pong received in 5s — connection is dead');
+                        connectionLog.log('probe_timeout', { bgDuration: Math.round(bgDuration / 1000) });
                         this.handleConnectionLost();
                     } else {
-                        console.log('[Background] Probe succeeded - connection alive');
-                        connectionLog.log('probe_success', { timeSincePong });
-                        // Restart regular ping interval now that probe is done
-                        this.startPing();
+                        console.log('[Background] Pong received — connection verified alive');
+                        connectionLog.log('probe_success', {});
                     }
-                }, 8000);
-            } else {
-                // Connection is already closed, reconnect immediately
-                console.warn('[Background] Connection closed during background, reconnecting...');
-                connectionLog.log('background_connection_closed', {});
-                this.handleConnectionLost();
+                }, 5000);
+                // Store timer so it can be cleaned up if connection tears down
+                this._resumeProbeTimer = probeTimer;
             }
         } else if (!this.isConnected) {
-            // Not connected at all, try auto-reconnect
+            // Not connected, try auto-reconnect to saved device
             const defaultDevice = localStorage.getItem('defaultDevice');
             if (defaultDevice && this.savedDevices[defaultDevice]) {
                 console.log('[Background] Not connected, auto-reconnecting...');
@@ -2170,14 +2214,17 @@ class RemoteInputApp {
         this.releaseWakeLock();
         this.stopKeepAliveAudio();
         this.stopForegroundService();
-        if (this.resumeProbeTimer) {
-            clearTimeout(this.resumeProbeTimer);
-            this.resumeProbeTimer = null;
+        if (this._resumeProbeTimer) {
+            clearTimeout(this._resumeProbeTimer);
+            this._resumeProbeTimer = null;
+        }
+        if (this._secureHandoffTimer) {
+            clearTimeout(this._secureHandoffTimer);
+            this._secureHandoffTimer = null;
         }
     }
 
     handleConnectionLost() {
-        this.stopPing();
         this.onConnectionTornDown();
         this.isConnected = false;
         this.isAuthenticated = false;
@@ -2214,12 +2261,12 @@ class RemoteInputApp {
             } else {
                 console.warn('[Reconnect] Max attempts reached, giving up');
                 this.autoReconnectAttempts = 0;
+                this.updateStatus('error', 'Connection Lost - tap to retry');
             }
+        } else {
+            // No saved device to auto-reconnect to
+            this.updateStatus('error', 'Connection Lost - tap to retry');
         }
-
-        this.updateStatus('error', 'Connection Lost');
-        this.showScreen('login');
-        this.renderSavedDevices();
     }
 
     // Helper: collapse screen share UI without sending a message
@@ -2250,88 +2297,12 @@ class RemoteInputApp {
         const screenViewer = document.getElementById('screenViewer');
 
         try {
-            // Handle both P2P objects (raw) and WebSocket strings (JSON)
+            // P2P mode: data arrives as raw objects
             const m = (typeof data === 'string') ? JSON.parse(data) : data;
 
-            // Respond to incoming Pings (Heartbeat from Desktop)
-            if (m.type === 'ping') {
-                this.send({ type: 'pong', time: Date.now() });
-                return;
-            }
-
-            // Handle server connection response
-            if (m.type === 'connected') {
-                this.authRequired = m.authRequired;
-                if (!m.authRequired) {
-                    // No auth required, we're connected - show main app
-                    this.isAuthenticated = true;
-                    this.updateStatus('connected', 'Connected');
-                    this.updateLoginStatus('Connected!', 'success');
-                    this.startPing();
-                    this.showScreen('main');
-                } else {
-                    // Auth required - try token first, then PIN
-                    if (this.pendingToken) {
-                        // Try token auth
-                        this.send({
-                            type: 'auth',
-                            token: this.pendingToken,
-                            deviceId: this.deviceId
-                        });
-                        this.updateLoginStatus('Connecting with saved credentials...', 'connecting');
-                    } else if (this.pendingPin) {
-                        // PIN auth with rememberMe
-                        this.send({
-                            type: 'auth',
-                            pin: this.pendingPin,
-                            computerName: this.computerName,
-                            rememberMe: this.pendingRememberMe,
-                            deviceId: this.deviceId
-                        });
-                        this.pendingPin = null;
-                        this.updateLoginStatus('Authenticating...', 'connecting');
-                    } else {
-                        // No PIN or token, update login screen
-                        this.updateLoginStatus('PIN required', 'error');
-                    }
-                }
-                return;
-            }
-
-            // Handle auth result
-            if (m.type === 'auth_result') {
-                if (m.success) {
-                    this.isAuthenticated = true;
-                    this.updateStatus('connected', 'Connected');
-                    this.updateLoginStatus('Authenticated!', 'success');
-                    this.startPing();
-
-                    // Save device if token was returned (rememberMe was true)
-                    if (m.token) {
-                        const computerName = m.computerName || this.computerName;
-                        this.saveDevice(this.customServer, computerName, m.token);
-                    }
-
-                    // Clear pending data
-                    this.pendingToken = null;
-                    this.pendingRememberMe = false;
-
-                    // Show main app after successful auth
-                    setTimeout(() => this.showScreen('main'), 500);
-                } else {
-                    // Auth failed
-                    this.pendingToken = null; // Clear invalid token
-
-                    // If token expired, remove from saved and prompt for PIN
-                    if (m.requirePin) {
-                        const key = this.customServer || 'local';
-                        this.removeDevice(key);
-                        this.updateLoginStatus('Session expired. Enter PIN to reconnect.', 'error');
-                    } else {
-                        this.updateStatus('error', m.error || 'Auth failed');
-                        this.updateLoginStatus(m.error || 'Authentication failed', 'error');
-                    }
-                }
+            // Liveness probe response from desktop
+            if (m.type === 'pong') {
+                this._lastPongTime = Date.now();
                 return;
             }
 
@@ -2354,11 +2325,7 @@ class RemoteInputApp {
                 return;
             }
 
-            if (m.type === 'pong') {
-                this.latencies.push(Date.now() - m.time);
-                if (this.latencies.length > 10) this.latencies.shift();
-                this.el.latency.textContent = Math.round(this.latencies.reduce((a, b) => a + b, 0) / this.latencies.length) + 'ms';
-            } else if (m.type === 'screen-chunk') {
+            if (m.type === 'screen-chunk') {
                 // Legacy chunk handling removed
                 return;
             } else if (m.data) {
@@ -2396,13 +2363,6 @@ class RemoteInputApp {
                 cursorIndicator.style.left = cursorXPx + 'px';
                 cursorIndicator.style.top = cursorYPx + 'px';
                 cursorIndicator.style.display = 'block';
-            }
-
-            // Handle pong response
-            if (m.type === 'pong') {
-                console.log('[Ping] Received pong');
-                this.lastPongTime = Date.now();
-                this.missedPongs = 0;
             }
 
         } catch { }

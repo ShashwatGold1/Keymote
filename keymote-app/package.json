@@ -4,6 +4,8 @@
   "description": "Keymote - Remote Control Mobile App",
   "main": "index.js",
   "scripts": {
+    "start": "cd src && python -m http.server 3000",
+    "dev": "cd src && npx http-server -p 3000 -c-1",
     "build": "echo 'No build needed - static files'",
     "cap:init": "npx cap init Keymote com.keymote.app --web-dir src",
     "cap:add": "npx cap add android",

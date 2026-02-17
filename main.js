@@ -296,6 +296,7 @@ async function sendServerInfoToRenderer() {
         hostId: tokenStorage.getHostId()
     });
     console.log(`[Main] Connection PIN: ${SESSION_PIN} | Computer: ${COMPUTER_NAME}`);
+    console.log(`[Main] Mobile App URL: http://localhost:8080`);
 }
 
 /**

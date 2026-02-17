@@ -182,32 +182,47 @@ function initDualPeers(info) {
     initSecurePeer(info.hostId);
 }
 
-// Peer Configuration with TURN relay for network switching resilience
+// =============================================
+// PEER CONFIGURATION — Keep in sync with keymote-app/src/app.js
+// =============================================
+
+// ICE servers for WebRTC connectivity (STUN for NAT discovery, TURN for relay fallback)
+const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+    },
+    {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+    },
+    {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+    }
+];
+
+// PeerJS signaling server config
+// Default (commented out) uses 0.peerjs.com — public, rate-limited, not recommended for production
+// To self-host: npx peerjs --port 9000, then uncomment and set your server below
+// See: https://github.com/peers/peerjs-server
+const SIGNALING_SERVER = {
+    // host: 'your-peerjs-server.example.com',
+    // port: 443,
+    // path: '/myapp',
+    // secure: true
+};
+
 const peerConfig = {
     debug: 1,
+    ...SIGNALING_SERVER,
     config: {
-        iceServers: [
-            // STUN servers for NAT discovery (direct connection preferred)
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            // TURN servers for relay (fallback through restrictive NAT/firewalls)
-            {
-                urls: 'turn:openrelay.metered.ca:80',
-                username: 'openrelayproject',
-                credential: 'openrelayproject'
-            },
-            {
-                urls: 'turn:openrelay.metered.ca:443',
-                username: 'openrelayproject',
-                credential: 'openrelayproject'
-            },
-            {
-                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-                username: 'openrelayproject',
-                credential: 'openrelayproject'
-            }
-        ],
-        // Prioritize direct connections, fallback to TURN relay
+        iceServers: ICE_SERVERS,
         iceTransportPolicy: 'all'
     }
 };
@@ -250,78 +265,41 @@ function initDiscoveryPeer(pin) {
                 console.log('[Discovery] Pairing successful. Token sent.');
                 connectionLog.log('pairing_success', { deviceName: data.deviceName, hostId: lastServerInfo.hostId });
 
-                // Close discovery connection (client should reconnect to Secure Peer)
-                setTimeout(() => conn.close(), 1000);
+                // Close discovery connection after giving mobile time to receive the response.
+                // Mobile closes from its side first; this is a safety cleanup.
+                setTimeout(() => {
+                    if (conn.open) conn.close();
+                }, 5000);
             }
         });
     });
 
     peerDiscovery.on('disconnected', () => {
-        console.log('[Discovery] Disconnected from signaling server, reconnecting...');
-        if (peerDiscovery && !peerDiscovery.destroyed) {
-            peerDiscovery.reconnect();
+        console.log('[Discovery] Disconnected from signaling server');
+        // Only reconnect if not already being recreated by error handler
+        if (peerDiscovery && !peerDiscovery.destroyed && !peerDiscovery._reconnecting) {
+            peerDiscovery._reconnecting = true;
+            setTimeout(() => {
+                if (peerDiscovery && !peerDiscovery.destroyed) {
+                    peerDiscovery._reconnecting = false;
+                    peerDiscovery.reconnect();
+                }
+            }, 5000);
         }
     });
 
     peerDiscovery.on('error', (err) => {
-        console.error('[Discovery] Error:', err);
-        // Retry logic if ID is taken (rare for random PIN)
+        console.error('[Discovery] Error:', err.type || err.message);
         if (err.type === 'unavailable-id') {
-            setTimeout(() => initDiscoveryPeer(pin), 3000);
+            setTimeout(() => initDiscoveryPeer(pin), 5000);
         }
+        // For network errors, let the 'disconnected' handler deal with reconnect
+        // Don't recreate the peer here — that causes a loop
     });
 }
 
 
-function startHeartbeat(conn) {
-    if (conn.heartbeatInfo) clearInterval(conn.heartbeatInfo);
-
-    conn.lastPong = Date.now();
-    conn.lastPing = Date.now();
-    conn.isSleeping = false;
-
-    conn.heartbeatInfo = setInterval(() => {
-        const pongSilenceSec = Math.round((Date.now() - conn.lastPong) / 1000);
-        const pingSilenceSec = conn.lastPing ? Math.round((Date.now() - conn.lastPing) / 1000) : 999;
-
-        // Check BOTH directions: pongs we're receiving AND pings mobile is sending
-        // If EITHER direction is dead for 30s, the connection is dead
-        const maxSilence = Math.max(pongSilenceSec, pingSilenceSec);
-
-        if (maxSilence > 30) {
-            // 30s of silence in either direction — connection is truly dead
-            const deadDirection = pongSilenceSec > 30 ? 'no_pong_response' : 'no_ping_from_mobile';
-            console.error(`[Secure] Connection dead (${maxSilence}s silent, direction: ${deadDirection}): ${conn.deviceName}`);
-            connectionLog.log('heartbeat_timeout', { deviceName: conn.deviceName, maxSilence, pongSilenceSec, pingSilenceSec, deadDirection });
-            conn.close();
-            clearInterval(conn.heartbeatInfo);
-            return;
-        }
-
-        if (maxSilence > 10 && !conn.isSleeping) {
-            // Phone likely went to sleep — log once, keep pinging
-            conn.isSleeping = true;
-            console.log(`[Secure] ${conn.deviceName} appears to be sleeping, waiting patiently...`);
-        }
-
-        if (maxSilence <= 10 && conn.isSleeping) {
-            // Phone woke up and responded
-            conn.isSleeping = false;
-            console.log(`[Secure] ${conn.deviceName} woke up! Connection alive.`);
-        }
-
-        // Always keep pinging (3s) — keeps NAT alive & gives phone something
-        // to respond to the instant it wakes up
-        if (conn.open) {
-            conn.send({ type: 'ping' });
-        }
-    }, 3000);
-
-    // Clean up on close (PeerJS fires this on real ICE/DTLS failure)
-    conn.on('close', () => {
-        if (conn.heartbeatInfo) clearInterval(conn.heartbeatInfo);
-    });
-}
+// REMOVED: startHeartbeat() function - relying on real WebRTC close/error events instead
 
 // --- 2. SECURE PEER (UUID) ---
 function initSecurePeer(hostId) {
@@ -350,17 +328,6 @@ function initSecurePeer(hostId) {
         conn.isAuthenticated = false; // Default to blocked
 
         conn.on('data', async (data) => {
-            // Heartbeat (Ping/Pong) - Handle both sides
-            if (data && data.type === 'ping') {
-                conn.lastPing = Date.now(); // Track incoming pings from mobile
-                conn.send({ type: 'pong', time: Date.now() });
-                return;
-            }
-            if (data && data.type === 'pong') {
-                conn.lastPong = Date.now(); // Track pong receipt (desktop sent ping, got response)
-                return;
-            }
-
             // Auth Handshake
             if (data && data.type === 'auth') {
                 const isValid = await window.electronAPI.validateToken({
@@ -375,9 +342,6 @@ function initSecurePeer(hostId) {
                     connectionLog.log('auth_success', { deviceName: conn.deviceName, deviceId: data.deviceId });
                     conn.send({ type: 'auth-result', success: true });
                     updateGlobalStatus();
-
-                    // Start Heartbeat Monitor for this connection
-                    startHeartbeat(conn);
                 } else {
                     console.warn('[Secure] Auth Failed for:', data.deviceId);
                     conn.send({ type: 'auth-result', success: false, error: 'Invalid Token' });
@@ -390,6 +354,12 @@ function initSecurePeer(hostId) {
             if (!conn.isAuthenticated) return;
 
             // --- Authenticated Logic Below ---
+
+            // Liveness probe: respond to ping with pong
+            if (data && data.type === 'ping') {
+                conn.send({ type: 'pong', ts: data.ts });
+                return;
+            }
 
             // Screen Share Request
             if (data && (data.type === 'screen' || data.type === 'screen-req') && data.action === 'start') {
@@ -449,17 +419,23 @@ function initSecurePeer(hostId) {
 
     // Auto-reconnect to signaling server (keeps call capability alive)
     peerSecure.on('disconnected', () => {
-        console.log('[Secure] Disconnected from signaling server, reconnecting...');
-        if (peerSecure && !peerSecure.destroyed) {
-            peerSecure.reconnect();
+        console.log('[Secure] Disconnected from signaling server');
+        // Only reconnect if not already being recreated by error handler
+        if (peerSecure && !peerSecure.destroyed && !peerSecure._reconnecting) {
+            peerSecure._reconnecting = true;
+            setTimeout(() => {
+                if (peerSecure && !peerSecure.destroyed) {
+                    peerSecure._reconnecting = false;
+                    peerSecure.reconnect();
+                }
+            }, 5000);
         }
     });
 
     peerSecure.on('error', (err) => {
-        console.error('[Secure] Error:', err);
-        if (err.type === 'network' || err.type === 'server-error' || err.message.includes('Lost connection')) {
-            setTimeout(() => initSecurePeer(hostId), 3000);
-        }
+        console.error('[Secure] Error:', err.type || err.message);
+        // For network errors, let the 'disconnected' handler deal with reconnect
+        // Don't recreate the peer here — that causes a reconnection loop
     });
 }
 

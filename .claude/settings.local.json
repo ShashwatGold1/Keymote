@@ -15,7 +15,15 @@
       "Bash(powershell -Command:*)",
       "Bash(npm install:*)",
       "Bash(gradlew.bat assembleDebug:*)",
-      "Bash(./gradlew assembleDebug:*)"
+      "Bash(./gradlew assembleDebug:*)",
+      "Bash(grep:*)",
+      "Bash(node:*)",
+      "Bash(netstat:*)",
+      "Bash(taskkill:*)",
+      "Bash(lsof:*)",
+      "Bash(xargs:*)",
+      "Bash(python:*)",
+      "Bash(curl:*)"
     ]
   }
 }
