@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:background="@drawable/panel_background"
+    android:padding="8dp"
+    android:gravity="center_vertical"
+    android:elevation="8dp">
+
+    <EditText
+        android:id="@+id/overlay_input"
+        android:layout_width="0dp"
+        android:layout_height="88dp"
+        android:layout_weight="1"
+        android:hint="Type here..."
+        android:textColor="#FFFFFF"
+        android:textColorHint="#888888"
+        android:textSize="16sp"
+        android:background="@android:color/transparent"
+        android:paddingStart="12dp"
+        android:paddingEnd="8dp"
+        android:singleLine="true"
+        android:imeOptions="actionSend"
+        android:inputType="text"
+        android:gravity="center_vertical"
+        android:importantForAutofill="no" />
+
+    <ImageButton
+        android:id="@+id/btn_clear"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:background="?android:attr/selectableItemBackgroundBorderless"
+        android:contentDescription="Clear"
+        android:padding="8dp"
+        android:src="@android:drawable/ic_menu_delete"
+        android:tint="#888888" />
+
+</LinearLayout>

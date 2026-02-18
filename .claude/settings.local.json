@@ -23,7 +23,8 @@
       "Bash(lsof:*)",
       "Bash(xargs:*)",
       "Bash(python:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(copy:*)"
     ]
   }
 }

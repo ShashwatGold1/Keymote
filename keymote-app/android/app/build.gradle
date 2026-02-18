@@ -47,6 +47,12 @@ dependencies {
     
     // ZXing Core for fallback scanning
     implementation 'com.google.zxing:core:3.5.3'
+
+    // LocalBroadcastManager for floating overlay plugin communication
+    implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+
+    // Java-WebSocket for native overlay → desktop direct connection
+    implementation 'org.java-websocket:Java-WebSocket:1.5.6'
     
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
