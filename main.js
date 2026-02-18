@@ -9,6 +9,7 @@ const path = require('path');
 const QRCode = require('qrcode');
 const os = require('os');
 const fs = require('fs');
+const { WebSocketServer } = require('ws');
 const AutoLaunch = require('auto-launch');
 
 // Import input injectors
@@ -248,6 +249,59 @@ function stopCursorPolling() {
     }
 }
 
+// --- Overlay WebSocket Relay Server ---
+// Native Android service connects here to send text even when app is killed
+let overlayWss = null;
+let overlayWsPort = 0;
+
+function startOverlayRelay() {
+    overlayWss = new WebSocketServer({ port: 0, host: '0.0.0.0' }); // OS assigns free port
+
+    overlayWss.on('listening', () => {
+        overlayWsPort = overlayWss.address().port;
+        console.log(`[OverlayRelay] WebSocket server listening on port ${overlayWsPort}`);
+    });
+
+    overlayWss.on('connection', (ws) => {
+        console.log('[OverlayRelay] Mobile overlay connected');
+
+        ws.on('message', (raw) => {
+            try {
+                const data = JSON.parse(raw);
+                if (data.type === 'text' && data.text && keyboardInjector) {
+                    keyboardInjector.handleKeyEvent({ type: 'text', text: data.text, delay: data.delay || 0 });
+                    console.log(`[OverlayRelay] Injected text: ${data.text.length} chars`);
+                } else if (data.type === 'key' && keyboardInjector) {
+                    keyboardInjector.handleKeyEvent(data);
+                }
+            } catch (e) {
+                console.warn('[OverlayRelay] Bad message:', e.message);
+            }
+        });
+
+        ws.on('close', () => {
+            console.log('[OverlayRelay] Mobile overlay disconnected');
+        });
+    });
+
+    overlayWss.on('error', (err) => {
+        console.error('[OverlayRelay] Server error:', err.message);
+    });
+}
+
+function getLocalIPs() {
+    const interfaces = os.networkInterfaces();
+    const ips = [];
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                ips.push(iface.address);
+            }
+        }
+    }
+    return ips;
+}
+
 /**
  * Create system tray icon
  */
@@ -293,7 +347,9 @@ async function sendServerInfoToRenderer() {
         qrCode,
         pin: SESSION_PIN,
         computerName: COMPUTER_NAME,
-        hostId: tokenStorage.getHostId()
+        hostId: tokenStorage.getHostId(),
+        overlayWsPort: overlayWsPort,
+        localIPs: getLocalIPs()
     });
     console.log(`[Main] Connection PIN: ${SESSION_PIN} | Computer: ${COMPUTER_NAME}`);
     console.log(`[Main] Mobile App URL: http://localhost:8080`);
@@ -307,6 +363,9 @@ async function initializeServices() {
         // Initialize injectors
         if (keyboardInjector) keyboardInjector.initialize();
         if (mouseInjector) mouseInjector.initialize();
+
+        // Start overlay WebSocket relay
+        startOverlayRelay();
 
         // Send server info to renderer (if window is ready)
         sendServerInfoToRenderer();
@@ -359,7 +418,9 @@ ipcMain.handle('get-server-info', async () => {
         qrCode,
         pin: SESSION_PIN,
         computerName: COMPUTER_NAME,
-        hostId: tokenStorage.getHostId()
+        hostId: tokenStorage.getHostId(),
+        overlayWsPort: overlayWsPort,
+        localIPs: getLocalIPs()
     };
 });
 
@@ -487,6 +548,7 @@ app.on('before-quit', async () => {
     isQuitting = true;
     stopCursorPolling();
     audioMuteInjector.cleanup();
+    if (overlayWss) { overlayWss.close(); overlayWss = null; }
 });
 
 // Handle system theme changes

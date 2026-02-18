@@ -1,3 +1,38 @@
+// =============================================
+// PEER CONFIGURATION — Keep in sync with renderer.js (desktop)
+// =============================================
+const PEER_CONFIG = {
+    debug: 1,
+    // PeerJS signaling server — default uses 0.peerjs.com (public, rate-limited)
+    // For production, self-host: https://github.com/peers/peerjs-server
+    // host: 'your-server.example.com',
+    // port: 443,
+    // path: '/myapp',
+    // secure: true,
+    config: {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            {
+                urls: 'turn:openrelay.metered.ca:80',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            },
+            {
+                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                username: 'openrelayproject',
+                credential: 'openrelayproject'
+            }
+        ],
+        iceTransportPolicy: 'all'
+    }
+};
+
 // Connection Event Logger - Diagnostic data collection
 const connectionLog = {
     events: [],
@@ -29,12 +64,16 @@ const connectionLog = {
 
 class RemoteInputApp {
     constructor() {
-        this.ws = null;
+        this.peer = null;
+        this.p2pConn = null;
         this.isConnected = false;
         this.isAuthenticated = false;
         this.authRequired = false;
         this.isStreaming = false;
-        this.reconnectAttempts = 0;
+        this.lastConnectedHostId = null;
+
+        // Presence monitor — polls desktop liveness when disconnected
+        this.presenceMonitor = new PresenceMonitor(PEER_CONFIG);
         this.modifiers = { ctrl: false, alt: false, shift: false, win: false };
         this.messageId = 0;
         this.latencies = [];
@@ -46,6 +85,7 @@ class RemoteInputApp {
         this.previousInput = '';
         this.typingDelay = parseInt(localStorage.getItem('typingDelay') || '50', 10);
         this.hapticFeedback = localStorage.getItem('hapticFeedback') !== 'false';
+        this.overlayBubbleEnabled = localStorage.getItem('overlayBubble') === 'true';
 
         this.theme = localStorage.getItem('theme') || 'dark';
 
@@ -111,6 +151,7 @@ class RemoteInputApp {
             typingDelayInput: document.getElementById('typingDelayInput'),
             typingDelayValue: document.getElementById('typingDelayValue'),
             hapticFeedbackInput: document.getElementById('hapticFeedbackInput'),
+            overlayBubbleInput: document.getElementById('overlayBubbleInput'),
             // Floating toolbar elements
             floatingToolbar: document.getElementById('floatingToolbar'),
             toolbarHandle: document.getElementById('toolbarHandle'),
@@ -153,6 +194,9 @@ class RemoteInputApp {
             }
             if (this.el.hapticFeedbackInput) {
                 this.el.hapticFeedbackInput.checked = this.hapticFeedback;
+            }
+            if (this.el.overlayBubbleInput) {
+                this.el.overlayBubbleInput.checked = this.overlayBubbleEnabled;
             }
 
             this.setupListeners();
@@ -1010,6 +1054,19 @@ class RemoteInputApp {
             };
         }
 
+        // Overlay Bubble Toggle
+        if (this.el.overlayBubbleInput) {
+            this.el.overlayBubbleInput.onchange = (e) => {
+                this.overlayBubbleEnabled = e.target.checked;
+                localStorage.setItem('overlayBubble', this.overlayBubbleEnabled);
+                if (this.overlayBubbleEnabled) {
+                    this.startFloatingOverlay();
+                } else {
+                    this.stopFloatingOverlay();
+                }
+            };
+        }
+
         // Screen settings handlers
         this.loadScreenSettings();
         this.setupScreenSettingsListeners();
@@ -1518,6 +1575,8 @@ class RemoteInputApp {
     }
 
     // P2P Connection Logic - DUAL CHANNEL (Pairing + Secure)
+    // Optimized: reuses existing Peer when signaling connection is still alive,
+    // saving ~1-3s on discovery→secure handoff.
     connectP2P(pinOrHostId, isSecure = false, token = null, silent = false) {
         if (!pinOrHostId) {
             this.updateLoginStatus('Connection ID required', 'error');
@@ -1532,132 +1591,54 @@ class RemoteInputApp {
             this.showProcessingOverlay(isSecure ? 'Verifying Security Token...' : 'Pairing with Device...');
         }
 
-        // Initialize Peer with TURN relay for network switching resilience
-        if (this.peer) this.peer.destroy();
-        this.peer = new Peer({
-            debug: 1,
-            config: {
-                iceServers: [
-                    // STUN servers for NAT discovery (direct connection preferred)
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' },
-                    // TURN servers for relay (fallback through restrictive NAT/firewalls)
-                    {
-                        urls: 'turn:openrelay.metered.ca:80',
-                        username: 'openrelayproject',
-                        credential: 'openrelayproject'
-                    },
-                    {
-                        urls: 'turn:openrelay.metered.ca:443',
-                        username: 'openrelayproject',
-                        credential: 'openrelayproject'
-                    },
-                    {
-                        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-                        username: 'openrelayproject',
-                        credential: 'openrelayproject'
-                    }
-                ],
-                // Prioritize direct connections, fallback to TURN relay
-                iceTransportPolicy: 'all'
-            }
-        });
-
-        this.peer.on('call', (call) => {
-            const isAudioOnly = call.metadata && call.metadata.type === 'audio-only';
-            console.log(`[P2P] Incoming ${isAudioOnly ? 'Audio' : 'Video'} Call`);
-            call.answer();
-
-            call.on('stream', (stream) => {
-                if (isAudioOnly) {
-                    // Audio-only stream — route to audio element
-                    console.log('[P2P] Audio Stream Received');
-                    const audio = document.getElementById('remoteAudio');
-                    if (audio) {
-                        audio.srcObject = stream;
-                        audio.play().catch(e => console.error('Audio play error:', e));
-                    }
-                } else {
-                    // Screen share stream (may include audio)
-                    console.log('[P2P] Video Stream Received');
-                    const video = document.getElementById('remoteVideo');
-                    const img = document.getElementById('screenImage');
-                    if (video) {
-                        video.srcObject = stream;
-                        video.style.display = 'block';
-                        if (img) img.style.display = 'none';
-                        video.onloadedmetadata = () => {
-                            video.play().catch(e => console.error('Play error:', e));
-                            this.screenWidth = video.videoWidth;
-                            this.screenHeight = video.videoHeight;
-                        };
-
-                        // Monitor for track ending (desktop auto-reconnect will restart)
-                        stream.getVideoTracks().forEach(track => {
-                            track.onended = () => {
-                                console.warn('[P2P] Remote video track ended');
-                                video.style.display = 'none';
-                                const hint = document.getElementById('trackpadHint');
-                                if (hint) {
-                                    hint.textContent = 'Reconnecting screen share...';
-                                    hint.style.display = 'flex';
-                                }
-                            };
-                        });
-                    }
-                }
-            });
-        });
-
-        this.peer.on('open', (id) => {
-            console.log('[P2P] My Peer ID:', id);
-            connectionLog.log('peer_open', { peerId: id, isSecure });
+        // --- Connection setup: opens data channel to target and wires handlers ---
+        const setupConnection = () => {
             const conn = this.peer.connect(targetId);
 
-            // Connection timeout with retry logic (30s timeout, exponential backoff)
+            // 10s timeout (fast failure detection)
             const connectTimeout = setTimeout(() => {
                 if (!this.isConnected || !this.isAuthenticated) {
-                    console.error('[P2P] Connection timeout - no response in 30s');
+                    console.error('[P2P] Connection timeout (10s)');
                     connectionLog.log('connect_timeout', { targetId, isSecure });
 
-                    // Retry with exponential backoff: 2s, 4s, 8s (max 3 attempts)
                     this.connectionAttempts = (this.connectionAttempts || 0) + 1;
                     if (this.connectionAttempts <= 3) {
-                        const delay = 2000 * Math.pow(2, this.connectionAttempts - 1);
+                        const delay = 1000 * Math.pow(2, this.connectionAttempts - 1); // 1s, 2s, 4s
                         console.log(`[P2P] Retrying in ${delay / 1000}s (attempt ${this.connectionAttempts}/3)...`);
-                        this.updateLoginStatus(`Reconnecting (attempt ${this.connectionAttempts}/3)...`, 'connecting');
-                        this.showProcessingOverlay(`Retrying connection... (${this.connectionAttempts}/3)`);
+                        if (!silent) {
+                            this.updateLoginStatus(`Reconnecting (${this.connectionAttempts}/3)...`, 'connecting');
+                            this.showProcessingOverlay(`Retrying... (${this.connectionAttempts}/3)`);
+                        }
                         setTimeout(() => {
-                            this.connectP2P(targetId, isSecure, token, silent);
+                            // Use pinOrHostId (NOT targetId) to avoid double keymote- prefix
+                            this.connectP2P(pinOrHostId, isSecure, token, silent);
                         }, delay);
                     } else {
-                        console.error('[P2P] Max connection attempts reached');
+                        console.error('[P2P] Max attempts reached');
                         this.showErrorOverlay('Connection timeout - please try again');
                         this.connectionAttempts = 0;
                     }
                 }
-            }, 30000);
+            }, 10000);
 
             conn.on('open', () => {
-                clearTimeout(connectTimeout); // Cancel timeout on success
-                this.connectionAttempts = 0; // Reset on successful connection
+                clearTimeout(connectTimeout);
+                this.connectionAttempts = 0;
                 console.log('[P2P] Data Channel Open');
                 connectionLog.log('data_channel_open', { targetId, isSecure });
                 this.p2pConn = conn;
 
                 if (isSecure) {
-                    // --- SECURE AUTH FLOW ---
                     console.log('[P2P] Sending Auth Token...');
                     conn.send({
                         type: 'auth',
                         deviceId: this.deviceId,
                         token: token,
-                        deviceName: 'Mobile Client' // TODO: Get real name if possible
+                        deviceName: 'Mobile Client'
                     });
                 } else {
-                    // --- PAIRING FLOW ---
                     console.log('[P2P] Sending Pairing Request...');
-                    connectionLog.log('pairing_sent', { deviceId: this.deviceId, isSecure: false });
+                    connectionLog.log('pairing_sent', { deviceId: this.deviceId });
                     conn.send({
                         type: 'pair-request',
                         deviceId: this.deviceId,
@@ -1667,25 +1648,18 @@ class RemoteInputApp {
             });
 
             conn.on('data', (data) => {
-                // Handle Handshake Responses
                 if (data.type === 'pair-success') {
                     console.log('[P2P] Pairing Successful! Token received.');
                     connectionLog.log('pair_success', { hostId: data.hostId });
-                    // Save credentials
                     this.saveDevice(data.hostId, this.computerName, data.token);
-                    // Set as default ONLY if this is the first device
                     if (!localStorage.getItem('defaultDevice')) {
                         this.setDefaultDevice(data.hostId);
-                        console.log('[P2P] Set as default device (first device)');
-                    } else {
-                        console.log('[P2P] Device saved. User can change default from saved devices list (star icon).');
                     }
 
-                    // Disconnect Discovery Peer
+                    // Close only the discovery DATA connection, keep the Peer alive.
+                    // connectP2P will detect the live peer and reuse it (fast path),
+                    // skipping the ~1-3s signaling server roundtrip.
                     conn.close();
-
-                    // Immediately reconnect using Secure Channel (no artificial delay)
-                    // Timeout and retry logic handled in connectP2P
                     this.connectP2P(data.hostId, true, data.token, silent);
                     return;
                 }
@@ -1696,17 +1670,17 @@ class RemoteInputApp {
                         connectionLog.log('auth_success', { computerName: this.computerName });
                         this.isConnected = true;
                         this.isAuthenticated = true;
-                        this.autoReconnectAttempts = 0; // Reset reconnect counter on success
+
+                        // Track last connected hostId for presence-based reconnection
+                        if (isSecure) this.lastConnectedHostId = pinOrHostId;
 
                         this.updateStatus('connected', 'Connected (Secure)');
                         if (!silent) {
                             this.updateLoginStatus('Connected securely!', 'success');
                             this.showSuccessOverlay('Connected!');
-                            // Show main screen after success overlay (for login flow)
                             setTimeout(() => this.showScreen('main'), 500);
                         } else {
-                            // Silent mode: already on main page, just update status (done above)
-                            console.log('[P2P] Background reconnect succeeded, already on main page');
+                            console.log('[P2P] Background reconnect succeeded');
                         }
 
                         this.onConnectionEstablished();
@@ -1714,7 +1688,18 @@ class RemoteInputApp {
                         console.error('[P2P] Auth Failed:', data.error);
                         this.updateLoginStatus('Auth Failed: ' + data.error, 'error');
                         this.showErrorOverlay('Auth Failed');
-                        // If token invalid, maybe delete saved device?
+                    }
+                    return;
+                }
+
+                // Desktop sends overlay WebSocket relay address after auth
+                if (data.type === 'overlay-relay-info') {
+                    console.log('[P2P] Received overlay relay info:', data.ips, 'port:', data.port);
+                    this._overlayRelayInfo = { ips: data.ips, port: data.port };
+                    this.saveOverlayRelayInfo(data.ips, data.port);
+                    // Start overlay only if enabled in settings
+                    if (this.overlayBubbleEnabled) {
+                        this.startFloatingOverlay();
                     }
                     return;
                 }
@@ -1723,38 +1708,111 @@ class RemoteInputApp {
             });
 
             conn.on('close', () => {
-                console.log('[P2P] Closed');
+                console.log(`[P2P] Connection closed (${isSecure ? 'Secure' : 'Discovery'})`);
                 connectionLog.log('connection_closed', { reason: 'peer_closed', isSecure });
-                this.isConnected = false;
-                this.updateStatus('error', 'Disconnected');
-                this.handleConnectionLost(); // Handle reconnect regardless of auth state
+
+                if (isSecure) {
+                    this.isConnected = false;
+                    this.updateStatus('error', 'Disconnected');
+                    this.handleConnectionLost();
+                }
+                // Discovery close is expected during pairing handoff — don't
+                // trigger handleConnectionLost or it destroys the peer we need to reuse.
             });
 
             conn.on('error', (err) => {
                 console.error('[P2P] Conn Error:', err);
-                this.updateLoginStatus('Connection Failed', 'error');
-                this.showErrorOverlay('Connection Failed');
+                clearTimeout(connectTimeout);
+                if (!silent) {
+                    this.updateLoginStatus('Connection Failed', 'error');
+                    this.showErrorOverlay('Connection Failed');
+                }
             });
-        });
+        };
 
-        // Auto-reconnect to signaling server (keeps call capability alive)
-        this.peer.on('disconnected', () => {
-            console.log('[P2P] Disconnected from signaling server, reconnecting...');
-            if (this.peer && !this.peer.destroyed) {
-                this.peer.reconnect();
-            }
-        });
+        // --- Peer lifecycle: reuse existing or create new ---
+        const peerAlive = this.peer && !this.peer.destroyed && this.peer.open;
 
-        this.peer.on('error', (err) => {
-            console.error('[P2P] Error:', err);
-            // Don't show error overlay for call failures - data channel still works
-            if (err.type === 'peer-unavailable') {
-                console.warn('[P2P] Peer unavailable (call may retry)');
-                return;
-            }
-            this.updateLoginStatus('P2P Error: ' + err.type, 'error');
-            this.showErrorOverlay('Error: ' + err.type);
-        });
+        if (peerAlive) {
+            // FAST PATH: peer is already connected to signaling server.
+            // Skip the ~1-3s signaling roundtrip — connect immediately.
+            console.log('[P2P] Reusing signaling connection (fast path)');
+            connectionLog.log('peer_reuse', { existingId: this.peer.id });
+            setupConnection();
+        } else {
+            // SLOW PATH: need a fresh peer + signaling server handshake.
+            if (this.peer && !this.peer.destroyed) this.peer.destroy();
+            this.peer = new Peer(PEER_CONFIG);
+
+            // Peer-level handlers — only registered on new peer creation
+            this.peer.on('call', (call) => {
+                const isAudioOnly = call.metadata && call.metadata.type === 'audio-only';
+                console.log(`[P2P] Incoming ${isAudioOnly ? 'Audio' : 'Video'} Call`);
+                call.answer();
+
+                call.on('stream', (stream) => {
+                    if (isAudioOnly) {
+                        console.log('[P2P] Audio Stream Received');
+                        const audio = document.getElementById('remoteAudio');
+                        if (audio) {
+                            audio.srcObject = stream;
+                            audio.play().catch(e => console.error('Audio play error:', e));
+                        }
+                    } else {
+                        console.log('[P2P] Video Stream Received');
+                        const video = document.getElementById('remoteVideo');
+                        const img = document.getElementById('screenImage');
+                        if (video) {
+                            video.srcObject = stream;
+                            video.style.display = 'block';
+                            if (img) img.style.display = 'none';
+                            video.onloadedmetadata = () => {
+                                video.play().catch(e => console.error('Play error:', e));
+                                this.screenWidth = video.videoWidth;
+                                this.screenHeight = video.videoHeight;
+                            };
+
+                            stream.getVideoTracks().forEach(track => {
+                                track.onended = () => {
+                                    console.warn('[P2P] Remote video track ended');
+                                    video.style.display = 'none';
+                                    const hint = document.getElementById('trackpadHint');
+                                    if (hint) {
+                                        hint.textContent = 'Reconnecting screen share...';
+                                        hint.style.display = 'flex';
+                                    }
+                                };
+                            });
+                        }
+                    }
+                });
+            });
+
+            this.peer.on('open', (id) => {
+                console.log('[P2P] Peer registered:', id);
+                connectionLog.log('peer_open', { peerId: id });
+                setupConnection();
+            });
+
+            this.peer.on('disconnected', () => {
+                console.log('[P2P] Signaling server disconnected, reconnecting...');
+                if (this.peer && !this.peer.destroyed) {
+                    this.peer.reconnect();
+                }
+            });
+
+            this.peer.on('error', (err) => {
+                console.error('[P2P] Peer Error:', err.type || err.message);
+                if (err.type === 'peer-unavailable') {
+                    console.warn('[P2P] Peer unavailable (call may retry)');
+                    return;
+                }
+                if (!silent) {
+                    this.updateLoginStatus('P2P Error: ' + err.type, 'error');
+                    this.showErrorOverlay('Error: ' + err.type);
+                }
+            });
+        }
     }
 
     // Saved Devices Management (P2P Mode - restored from previous UI)
@@ -1889,19 +1947,6 @@ class RemoteInputApp {
     }
 
     disconnect() {
-        if (this.ws) {
-            this.ws.close();
-            this.ws = null;
-        }
-        this.isConnected = false;
-        this.isAuthenticated = false;
-        this.onConnectionTornDown();
-    }
-
-    // Explicit user-initiated logout (when clicking X button in header)
-    logout() {
-        console.log('[Logout] User explicitly logged out');
-        this.onConnectionTornDown();
         this.isConnected = false;
         this.isAuthenticated = false;
         if (this.p2pConn) {
@@ -1912,20 +1957,30 @@ class RemoteInputApp {
             this.peer.destroy();
             this.peer = null;
         }
-        if (this.autoReconnectTimer) {
-            clearTimeout(this.autoReconnectTimer);
-            this.autoReconnectTimer = null;
+        this.onConnectionTornDown();
+    }
+
+    // Explicit user-initiated logout (when clicking X button in header)
+    logout() {
+        console.log('[Logout] User explicitly logged out');
+        this.presenceMonitor.stopPolling();
+        this.onConnectionTornDown();
+        this.isConnected = false;
+        this.isAuthenticated = false;
+        this.lastConnectedHostId = null;
+        if (this.p2pConn) {
+            this.p2pConn.close();
+            this.p2pConn = null;
         }
-        this.autoReconnectAttempts = 0;
+        if (this.peer) {
+            this.peer.destroy();
+            this.peer = null;
+        }
         this.updateStatus('error', 'Logged Out');
         this.showScreen('login');
         this.renderSavedDevices();
     }
 
-    scheduleReconnect() {
-        if (this.reconnectAttempts++ >= 10) return;
-        setTimeout(() => { if (!this.isConnected) this.connect(); }, Math.min(1000 * Math.pow(1.5, this.reconnectAttempts - 1), 10000));
-    }
 
     updateStatus(s, t) {
         if (this.el.connBtn) {
@@ -2072,24 +2127,32 @@ class RemoteInputApp {
             this.acquireWakeLock();
         }
 
-        // Check connection status after resume
+        // Check connection using raw DataChannel state (more reliable than PeerJS conn.open
+        // which can be stale after Android suspends the WebView)
         if (this.isConnected && this.p2pConn) {
-            if (this.p2pConn.open) {
-                // Connection is open, stays connected
-                console.log('[Background] Connection still open after resume');
-                connectionLog.log('resume_connected', {});
-            } else {
-                // Connection is closed, reconnect
-                console.warn('[Background] Connection closed during background, reconnecting...');
-                connectionLog.log('background_connection_closed', {});
+            const dc = this.p2pConn.dataChannel;
+            const dcState = dc ? dc.readyState : 'unknown';
+
+            if (dcState === 'closed' || dcState === 'closing' || !this.p2pConn.open) {
+                console.warn(`[Background] Connection dead (dataChannel: ${dcState})`);
+                connectionLog.log('resume_dead', { dcState });
                 this.handleConnectionLost();
+            } else {
+                console.log(`[Background] Connection alive (dataChannel: ${dcState})`);
+                connectionLog.log('resume_connected', { dcState });
             }
         } else if (!this.isConnected) {
-            // Not connected, try auto-reconnect to saved device
-            const defaultDevice = localStorage.getItem('defaultDevice');
-            if (defaultDevice && this.savedDevices[defaultDevice]) {
-                console.log('[Background] Not connected, auto-reconnecting...');
-                this.connectFromSaved(defaultDevice, true);
+            // If presence is already polling, trigger an immediate check
+            if (this.presenceMonitor.polling) {
+                console.log('[Background] Presence polling active — checking now');
+                this.presenceMonitor.pollNow();
+            } else {
+                // Not polling and not connected — try direct reconnect
+                const defaultDevice = localStorage.getItem('defaultDevice');
+                if (defaultDevice && this.savedDevices[defaultDevice]) {
+                    console.log('[Background] Not connected, auto-reconnecting...');
+                    this.connectFromSaved(defaultDevice, true);
+                }
             }
         }
     }
@@ -2132,21 +2195,126 @@ class RemoteInputApp {
         } catch { }
     }
 
+    // Save overlay relay info to SharedPreferences (accessible by native service in separate process)
+    saveOverlayRelayInfo(ips, port) {
+        const info = JSON.stringify({ ips, port });
+        localStorage.setItem('overlayRelayInfo', info);
+        console.log('[FloatingOverlay] Saved relay info:', info);
+    }
+
+    // Floating overlay — persistent input bubble on top of all apps
+    // Text bypasses WebView entirely: native Service → WebSocket → Desktop
+    async startFloatingOverlay() {
+        try {
+            const { FloatingInput } = window.Capacitor?.Plugins || {};
+            if (!FloatingInput) {
+                console.warn('[FloatingOverlay] Plugin not available');
+                return;
+            }
+
+            // Listen for permission granted after returning from Settings
+            if (!this._overlayPermissionListener) {
+                this._overlayPermissionListener = FloatingInput.addListener('overlayPermissionGranted', async ({ granted }) => {
+                    if (granted && this.isConnected) {
+                        console.log('[FloatingOverlay] Permission just granted, starting overlay...');
+                        const relayInfo = this._overlayRelayInfo || JSON.parse(localStorage.getItem('overlayRelayInfo') || 'null');
+                        if (relayInfo) {
+                            await FloatingInput.startOverlay({
+                                ips: relayInfo.ips,
+                                port: relayInfo.port
+                            });
+                        }
+                        console.log('[FloatingOverlay] Started after permission grant');
+                    }
+                });
+            }
+
+            const { hasPermission } = await FloatingInput.hasOverlayPermission();
+            if (!hasPermission) {
+                console.log('[FloatingOverlay] Requesting overlay permission...');
+                await FloatingInput.requestOverlayPermission();
+                return; // Will auto-start via overlayPermissionGranted listener
+            }
+
+            // Get relay info (received from desktop or cached)
+            const relayInfo = this._overlayRelayInfo || JSON.parse(localStorage.getItem('overlayRelayInfo') || 'null');
+            if (!relayInfo) {
+                console.warn('[FloatingOverlay] No relay info yet, overlay will start when received');
+                return;
+            }
+
+            await FloatingInput.startOverlay({
+                ips: relayInfo.ips,
+                port: relayInfo.port
+            });
+            console.log('[FloatingOverlay] Started with relay:', relayInfo.ips, 'port:', relayInfo.port);
+        } catch (err) {
+            console.warn('[FloatingOverlay] Failed to start:', err.message);
+        }
+    }
+
+    async stopFloatingOverlay() {
+        try {
+            const { FloatingInput } = window.Capacitor?.Plugins || {};
+            if (!FloatingInput) return;
+
+            if (this._overlayPermissionListener) {
+                this._overlayPermissionListener.remove();
+                this._overlayPermissionListener = null;
+            }
+
+            await FloatingInput.stopOverlay();
+            console.log('[FloatingOverlay] Stopped');
+        } catch { }
+    }
+
     // Called when connection is successfully established
     onConnectionEstablished() {
+        this.presenceMonitor.stopPolling();
         this.acquireWakeLock();
         this.startKeepAliveAudio();
         this.startForegroundService();
+        // Floating overlay starts when overlay-relay-info arrives from desktop
+        // (sent right after auth-result, handled in P2P data listener)
+        this._startConnectionWatchdog();
     }
 
     // Called when connection is fully torn down
     onConnectionTornDown() {
+        this._stopConnectionWatchdog();
         this.releaseWakeLock();
         this.stopKeepAliveAudio();
         this.stopForegroundService();
-        if (this.resumeProbeTimer) {
-            clearTimeout(this.resumeProbeTimer);
-            this.resumeProbeTimer = null;
+        // NOTE: Do NOT stop the floating overlay here.
+        // The overlay runs in a separate process with its own WebSocket connection.
+        // It reconnects independently and survives P2P disconnects and app kills.
+        // User can stop it via the notification "Stop" button.
+    }
+
+    // Lightweight local watchdog — checks DataChannel.readyState every 3s.
+    // No network traffic. Detects when WebRTC internally marks the channel dead
+    // (e.g. desktop process killed, ICE timeout). Updates status immediately
+    // instead of waiting 30-60s for PeerJS close event.
+    _startConnectionWatchdog() {
+        this._stopConnectionWatchdog();
+        this._watchdogInterval = setInterval(() => {
+            if (!this.isConnected || !this.p2pConn) return;
+
+            const dc = this.p2pConn.dataChannel;
+            const state = dc ? dc.readyState : 'unknown';
+
+            if (state === 'closed' || state === 'closing') {
+                console.warn(`[Watchdog] DataChannel is ${state} — connection dead`);
+                connectionLog.log('watchdog_dead', { state });
+                this.handleConnectionLost();
+            }
+        }, 3000);
+    }
+
+    _stopConnectionWatchdog() {
+        if (this._watchdogInterval) {
+            clearInterval(this._watchdogInterval);
+            this._watchdogInterval = null;
         }
     }
 
@@ -2166,31 +2334,23 @@ class RemoteInputApp {
             this.peer = null;
         }
 
-        // Auto-reconnect using saved device credentials
-        const defaultDevice = localStorage.getItem('defaultDevice');
-        if (defaultDevice && this.savedDevices[defaultDevice]) {
-            this.autoReconnectAttempts = (this.autoReconnectAttempts || 0) + 1;
+        // Use lastConnectedHostId (set on auth success) to know which device to reconnect to.
+        // Falls back to defaultDevice from localStorage.
+        const hostId = this.lastConnectedHostId
+            || localStorage.getItem('defaultDevice');
 
-            if (this.autoReconnectAttempts <= 5) {
-                // Exponential backoff: 2s, 4s, 8s, 16s, 30s
-                const delay = Math.min(2000 * Math.pow(2, this.autoReconnectAttempts - 1), 30000);
-                console.log(`[Reconnect] Attempt ${this.autoReconnectAttempts}/5 in ${delay / 1000}s...`);
-                this.updateStatus('error', `Reconnecting (${this.autoReconnectAttempts}/5)...`);
+        if (hostId && this.savedDevices[hostId]) {
+            // Start presence polling — checks every 1s if desktop is back online.
+            // When detected, fires connectFromSaved() automatically.
+            this.updateStatus('error', 'Waiting for PC...');
+            console.log('[Reconnect] Starting presence polling for:', hostId);
 
-                if (this.autoReconnectTimer) clearTimeout(this.autoReconnectTimer);
-                this.autoReconnectTimer = setTimeout(() => {
-                    if (!this.isConnected) {
-                        this.connectFromSaved(defaultDevice, true);
-                    }
-                }, delay);
-                return; // Don't show login screen during auto-reconnect
-            } else {
-                console.warn('[Reconnect] Max attempts reached, giving up');
-                this.autoReconnectAttempts = 0;
-                this.updateStatus('error', 'Connection Lost - tap to retry');
-            }
+            this.presenceMonitor.startPolling(hostId, () => {
+                console.log('[Reconnect] Desktop detected — reconnecting!');
+                this.updateStatus('error', 'Reconnecting...');
+                this.connectFromSaved(hostId, true);
+            });
         } else {
-            // No saved device to auto-reconnect to
             this.updateStatus('error', 'Connection Lost - tap to retry');
         }
     }

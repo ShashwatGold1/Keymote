@@ -160,6 +160,7 @@
     </div>
 
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="presence.js"></script>
     <script src="app.js"></script>
     <!-- ============================================
          MAIN APP - Keyboard, Screen Share, etc.
@@ -176,8 +177,13 @@
                 <span class="brand-name">Keymote</span>
             </div>
             <div class="header-buttons">
-                <button id="disconnectBtn" class="header-btn" title="Disconnect"
-                    style="background: rgba(239, 68, 68, 0.2); color: #ef4444;">✕</button>
+                <button id="disconnectBtn" class="header-btn" title="Switch Device"
+                    style="background: rgba(239, 68, 68, 0.2); color: #ef4444;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+                        <rect x="7" y="7" width="10" height="10" rx="1" />
+                    </svg>
+                </button>
                 <button id="settingsBtn" class="header-btn settings-btn">⚙️</button>
                 <button id="themeBtn" class="header-btn theme-btn">🌙</button>
                 <button id="connectionBtn" class="header-btn connection-btn">
@@ -472,6 +478,14 @@
                             <input type="checkbox" id="hapticFeedbackInput" checked>
                             <span>Haptic Feedback (Vibration)</span>
                         </label>
+                    </div>
+                    <div class="settings-item">
+                        <label class="toggle-switch">
+                            <span>Floating Overlay Bubble</span>
+                            <input type="checkbox" id="overlayBubbleInput">
+                            <div class="toggle-slider"></div>
+                        </label>
+                        <small>Show input bubble on top of other apps</small>
                     </div>
                 </div>
             </div>

@@ -163,11 +163,22 @@ function displayServerInfo(info) {
 
     updateStatus('Waiting', `Ready to pair`);
 
+    // Store overlay relay info for sending to mobile after auth
+    if (info.overlayWsPort && info.localIPs) {
+        window._overlayRelayInfo = {
+            port: info.overlayWsPort,
+            ips: info.localIPs
+        };
+    }
+
     // Ensure PeerJS is initialized
     initDualPeers(info);
 }
 
 // --- DUAL PEER LOGIC ---
+
+// Presence monitor instance (standalone liveness detection)
+let presenceMonitor = null;
 
 function initDualPeers(info) {
     if (!info || !info.pin || !info.hostId) return;
@@ -180,6 +191,10 @@ function initDualPeers(info) {
 
     // 2. Secure Peer (HostID) - Persistent
     initSecurePeer(info.hostId);
+
+    // 3. Presence Peer — always-on liveness endpoint for mobile to detect us
+    if (!presenceMonitor) presenceMonitor = new PresenceMonitor(peerConfig);
+    presenceMonitor.startHost(info.hostId);
 }
 
 // Peer Configuration with TURN relay for network switching resilience
@@ -318,11 +333,34 @@ function initSecurePeer(hostId) {
                 });
 
                 if (isValid) {
+                    // Close any stale connections from the same deviceId
+                    // (e.g. mobile was killed and reconnected — old conn is still in the list)
+                    if (peerSecure && peerSecure.connections) {
+                        Object.values(peerSecure.connections).flat().forEach(oldConn => {
+                            if (oldConn !== conn && oldConn.deviceId === data.deviceId && oldConn.isAuthenticated) {
+                                console.log(`[Secure] Closing stale connection from ${oldConn.deviceName || data.deviceId}`);
+                                oldConn.isAuthenticated = false;
+                                try { oldConn.close(); } catch {}
+                            }
+                        });
+                    }
+
                     conn.isAuthenticated = true;
+                    conn.deviceId = data.deviceId;
                     conn.deviceName = data.deviceName || 'Unknown';
                     console.log(`[Secure] Authenticated: ${conn.deviceName}`);
                     connectionLog.log('auth_success', { deviceName: conn.deviceName, deviceId: data.deviceId });
                     conn.send({ type: 'auth-result', success: true });
+
+                    // Send overlay WebSocket relay info so mobile can connect natively
+                    if (window._overlayRelayInfo) {
+                        conn.send({
+                            type: 'overlay-relay-info',
+                            port: window._overlayRelayInfo.port,
+                            ips: window._overlayRelayInfo.ips
+                        });
+                    }
+
                     updateGlobalStatus();
                 } else {
                     console.warn('[Secure] Auth Failed for:', data.deviceId);
@@ -360,10 +398,12 @@ function initSecurePeer(hostId) {
         });
 
         conn.on('close', () => {
+            const wasAuthenticated = conn.isAuthenticated;
+            conn.isAuthenticated = false; // Prevent stale conn from being counted
             console.log('[Secure] Connection closed');
-            connectionLog.log('connection_closed', { deviceName: conn.deviceName || 'unknown', isAuthenticated: conn.isAuthenticated });
+            connectionLog.log('connection_closed', { deviceName: conn.deviceName || 'unknown', wasAuthenticated });
             // If this was an authenticated device, show reconnecting state
-            if (conn.isAuthenticated && conn.deviceName) {
+            if (wasAuthenticated && conn.deviceName) {
                 console.log(`[Secure] Waiting for ${conn.deviceName} to reconnect...`);
                 updateStatus('Reconnecting', `Waiting for ${conn.deviceName}...`);
                 el.deviceBadge.style.display = 'inline-flex';

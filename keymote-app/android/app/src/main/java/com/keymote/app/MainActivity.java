@@ -25,6 +25,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(GalleryQrScannerPlugin.class);
+        registerPlugin(FloatingInputPlugin.class);
         super.onCreate(savedInstanceState);
 
         acquireLocks();
