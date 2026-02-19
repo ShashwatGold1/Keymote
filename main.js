@@ -252,13 +252,12 @@ function stopCursorPolling() {
 // --- Overlay WebSocket Relay Server ---
 // Native Android service connects here to send text even when app is killed
 let overlayWss = null;
-let overlayWsPort = 0;
+let overlayWsPort = 38745; // Fixed port so overlay can reconnect after Electron restart
 
-function startOverlayRelay() {
-    overlayWss = new WebSocketServer({ port: 0, host: '0.0.0.0' }); // OS assigns free port
+function startOverlayRelay(retryCount = 0) {
+    overlayWss = new WebSocketServer({ port: overlayWsPort, host: '0.0.0.0' });
 
     overlayWss.on('listening', () => {
-        overlayWsPort = overlayWss.address().port;
         console.log(`[OverlayRelay] WebSocket server listening on port ${overlayWsPort}`);
     });
 
@@ -286,6 +285,11 @@ function startOverlayRelay() {
 
     overlayWss.on('error', (err) => {
         console.error('[OverlayRelay] Server error:', err.message);
+        // Retry if port is still held from previous instance
+        if (err.code === 'EADDRINUSE' && retryCount < 5) {
+            console.log(`[OverlayRelay] Port ${overlayWsPort} in use, retrying in ${(retryCount + 1)}s...`);
+            setTimeout(() => startOverlayRelay(retryCount + 1), (retryCount + 1) * 1000);
+        }
     });
 }
 
