@@ -23,12 +23,21 @@ class PresenceMonitor {
         this.hostId = hostId;
         const presenceId = `presence-${hostId}`;
 
+        // Clear any pending retry from previous attempt
+        if (this._hostRetryTimer) {
+            clearTimeout(this._hostRetryTimer);
+            this._hostRetryTimer = null;
+        }
+
         if (this.peer && !this.peer.destroyed) this.peer.destroy();
 
+        this._hostRetrying = false;
         this.peer = new Peer(presenceId, this.peerConfig);
 
         this.peer.on('open', () => {
             console.log('[Presence] Host ready:', presenceId);
+            this._hostRetryCount = 0;
+            this._hostRetrying = false;
         });
 
         this.peer.on('connection', (conn) => {
@@ -48,17 +57,34 @@ class PresenceMonitor {
 
         // Re-register on signaling server if disconnected
         this.peer.on('disconnected', () => {
+            // Skip if unavailable-id handler is already scheduling a retry
+            if (this._hostRetrying) return;
             console.log('[Presence] Host disconnected from signaling, reconnecting...');
             if (this.peer && !this.peer.destroyed) {
-                this.peer.reconnect();
+                try { this.peer.reconnect(); } catch {}
             }
         });
 
         this.peer.on('error', (err) => {
             if (err.type === 'unavailable-id') {
-                // Another instance has this ID — retry after a short delay
-                console.warn('[Presence] Host ID taken, retrying in 3s...');
-                setTimeout(() => this.startHost(hostId), 3000);
+                // Suppress the 'disconnected' handler — we'll handle retry here
+                this._hostRetrying = true;
+                this._hostRetryCount = (this._hostRetryCount || 0) + 1;
+                // First 3 retries: fast (3s). After that: slow (30s) to let
+                // the signaling server expire the ghost peer (~60s timeout).
+                const fast = this._hostRetryCount <= 3;
+                const delay = fast ? 3000 : 30000;
+                if (fast) {
+                    console.warn(`[Presence] Host ID taken, retry #${this._hostRetryCount} in ${delay / 1000}s`);
+                } else if (this._hostRetryCount === 4) {
+                    console.warn(`[Presence] Host ID still taken — slowing to ${delay / 1000}s retries (waiting for server to expire ghost peer)`);
+                }
+                // Don't destroy the failed peer again on retry — it never registered.
+                // Just wait and create a fresh one.
+                this._hostRetryTimer = setTimeout(() => {
+                    this._hostRetryTimer = null;
+                    this.startHost(hostId);
+                }, delay);
             }
         });
     }

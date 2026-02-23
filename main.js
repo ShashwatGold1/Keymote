@@ -4,6 +4,26 @@
  * P2P Only Mode - WebSocket removed
  */
 
+// Timestamp all console output: [HH:MM:SS.mmm]
+(function () {
+    const _log = console.log;
+    const _warn = console.warn;
+    const _error = console.error;
+
+    function ts() {
+        const now = new Date();
+        const h = String(now.getHours()).padStart(2, '0');
+        const m = String(now.getMinutes()).padStart(2, '0');
+        const s = String(now.getSeconds()).padStart(2, '0');
+        const ms = String(now.getMilliseconds()).padStart(3, '0');
+        return `[${h}:${m}:${s}.${ms}]`;
+    }
+
+    console.log = (...args) => _log(ts(), ...args);
+    console.warn = (...args) => _warn(ts(), ...args);
+    console.error = (...args) => _error(ts(), ...args);
+})();
+
 const { app, BrowserWindow, ipcMain, nativeTheme, Tray, Menu, desktopCapturer, screen } = require('electron');
 const path = require('path');
 const QRCode = require('qrcode');
@@ -152,6 +172,7 @@ let windowReady = false;
 let tray = null;
 let autoLauncher = null;
 let isQuitting = false;
+const startedHidden = process.argv.includes('--hidden');
 
 /**
  * Create the main application window
@@ -162,7 +183,7 @@ function createWindow() {
         height: 660,
         minWidth: 300,
         minHeight: 500,
-        icon: path.join(__dirname, 'assets', 'icon.png'),
+        icon: path.join(__dirname, 'assets', 'icon.ico'),
         backgroundColor: nativeTheme.shouldUseDarkColors ? '#0d0d0f' : '#ffffff',
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
@@ -171,15 +192,13 @@ function createWindow() {
         },
         frame: false,
         resizable: true,
-        show: true
+        show: false
     });
 
     mainWindow.loadFile('index.html');
 
-    // Open DevTools in development
-    if (isDev) {
-        mainWindow.webContents.openDevTools({ mode: 'detach' });
-    }
+    // DevTools disabled — enable manually if needed:
+    // mainWindow.webContents.openDevTools({ mode: 'detach' });
 
     // Track when window is ready to receive messages
     mainWindow.webContents.on('did-finish-load', () => {
@@ -188,9 +207,11 @@ function createWindow() {
         // Cursor polling now controlled by renderer via 'cursor-control'
     });
 
-    // Show window when ready
+    // Show window when ready (unless started hidden via auto-launch)
     mainWindow.once('ready-to-show', () => {
-        mainWindow.show();
+        if (!startedHidden) {
+            mainWindow.show();
+        }
     });
 
     // Minimize to tray on close (instead of quit)
@@ -304,9 +325,9 @@ function startOverlayRelay(retryCount = 0) {
     overlayWss.on('error', (err) => {
         console.error('[OverlayRelay] Server error:', err.message);
         // Retry if port is still held from previous instance
-        if (err.code === 'EADDRINUSE' && retryCount < 5) {
-            console.log(`[OverlayRelay] Port ${overlayWsPort} in use, retrying in ${(retryCount + 1)}s...`);
-            setTimeout(() => startOverlayRelay(retryCount + 1), (retryCount + 1) * 1000);
+        if (err.code === 'EADDRINUSE') {
+            console.log(`[OverlayRelay] Port ${overlayWsPort} in use, retrying in 3s...`);
+            setTimeout(() => startOverlayRelay(retryCount + 1), 3000);
         }
     });
 }
@@ -430,7 +451,7 @@ async function sendServerInfoToRenderer() {
         localIPs: getLocalIPs()
     });
     console.log(`[Main] Connection PIN: ${SESSION_PIN} | Computer: ${COMPUTER_NAME}`);
-    console.log(`[Main] Mobile App URL: http://localhost:${MOBILE_APP_PORT}`);
+    if (isDev) console.log(`[Main] Mobile App URL: http://localhost:${MOBILE_APP_PORT}`);
 }
 
 /**
@@ -442,8 +463,13 @@ async function initializeServices() {
         if (keyboardInjector) keyboardInjector.initialize();
         if (mouseInjector) mouseInjector.initialize();
 
-        // Start mobile app HTTP server
-        startMobileAppServer();
+        // Mobile app HTTP server — DEV ONLY
+        // The mobile app is distributed as a standalone APK/PWA.
+        // This local HTTP server (port 8080) serves mobile app files from keymote-app/src/
+        // and is only needed when testing the mobile web app locally during development.
+        if (isDev) {
+            startMobileAppServer();
+        }
 
         // Start overlay WebSocket relay
         startOverlayRelay();
@@ -582,31 +608,53 @@ ipcMain.on('set-theme', (event, theme) => {
 
 // Startup toggle handlers
 ipcMain.handle('get-auto-launch', async () => {
-    if (autoLauncher) {
-        return await autoLauncher.isEnabled();
+    if (!autoLauncher) return { success: false, enabled: false, error: 'Auto-launch not available in dev mode' };
+    try {
+        const enabled = await autoLauncher.isEnabled();
+        return { success: true, enabled };
+    } catch (err) {
+        console.error('[AutoLaunch] Failed to check status:', err.message);
+        return { success: false, enabled: false, error: err.message };
     }
-    return false;
 });
 
 ipcMain.handle('set-auto-launch', async (event, enabled) => {
-    if (autoLauncher) {
+    if (!autoLauncher) return { success: false, error: 'Auto-launch not available in dev mode' };
+    try {
         if (enabled) {
             await autoLauncher.enable();
         } else {
             await autoLauncher.disable();
         }
-        return enabled;
+        return { success: true, enabled };
+    } catch (err) {
+        console.error('[AutoLaunch] Failed to set auto-launch:', err.message);
+        return { success: false, error: err.message };
     }
-    return false;
 });
 
 // App lifecycle
 app.whenReady().then(async () => {
-    // Initialize auto-launcher
-    autoLauncher = new AutoLaunch({
-        name: 'Keymote',
-        path: app.getPath('exe')
-    });
+    // Initialize auto-launcher (skip in dev mode — path points to electron.exe, not the app)
+    if (!isDev) {
+        autoLauncher = new AutoLaunch({
+            name: 'Keymote',
+            path: app.getPath('exe'),
+            isHidden: true  // passes --hidden flag on startup
+        });
+
+        // Fix stale registry entry: verify the registered path still matches current exe
+        try {
+            const isEnabled = await autoLauncher.isEnabled();
+            if (isEnabled) {
+                // Re-register to update path in case the exe moved
+                await autoLauncher.disable();
+                await autoLauncher.enable();
+            }
+        } catch (err) {
+            console.error('[AutoLaunch] Failed to validate startup entry:', err.message);
+        }
+    }
 
     createWindow();
     createTray();

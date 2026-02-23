@@ -60,6 +60,10 @@ let lastServerInfo = null;
 let peerDiscovery = null; // PIN-based (Discovery)
 let peerSecure = null;    // Token-based (Persistent)
 
+// Signaling server connection tracking (Fix #4: SPOF detection)
+let signalingConnected = false;
+let signalingTimeout = null;
+
 // Log Forwarding (Debug)
 const originalLog = console.log;
 const originalWarn = console.warn;
@@ -197,15 +201,41 @@ function initDualPeers(info) {
     presenceMonitor.startHost(info.hostId);
 }
 
-// Peer Configuration with TURN relay for network switching resilience
+// Peer Configuration with ICE servers for NAT traversal
+//
+// STUN servers: Google's public STUN servers are highly reliable and free.
+// TURN servers: Using openrelay.metered.ca public TURN servers (free).
+//   LIMITATIONS:
+//   - These are community/public TURN servers with no SLA or uptime guarantee
+//   - They may be rate-limited, overloaded, or go offline without notice
+//   - For production use, replace with paid TURN servers from:
+//     * Metered.ca (50GB/month free tier, then paid): https://www.metered.ca/stun-turn
+//     * Twilio Network Traversal: https://www.twilio.com/stun-turn
+//     * Xirsys: https://xirsys.com/
+//   Example paid TURN config (Twilio):
+//     { urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+//       username: '<your-api-key-sid>',
+//       credential: '<your-api-key-secret>' }
+//
+// Signaling Server: Defaults to PeerJS cloud (0.peerjs.com:443).
+//   This is a single point of failure. For production reliability,
+//   self-host using: npx peerjs --port 9000
+//   Then uncomment and configure:
+//     host: 'your-server.example.com',
+//     port: 9000,
+//     path: '/myapp',
+//     secure: true,
+//   See: https://github.com/peers/peerjs-server
 const peerConfig = {
     debug: 1,
     config: {
         iceServers: [
-            // STUN servers for NAT discovery (direct connection preferred)
+            // STUN servers for NAT discovery (high reliability)
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            // TURN servers for relay (fallback through restrictive NAT/firewalls)
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            // TURN servers for relay fallback (public/free — see limitations above)
             {
                 urls: 'turn:openrelay.metered.ca:80',
                 username: 'openrelayproject',
@@ -222,7 +252,7 @@ const peerConfig = {
                 credential: 'openrelayproject'
             }
         ],
-        // Prioritize direct connections, fallback to TURN relay
+        // 'all' = try direct connection first, then TURN relay as fallback
         iceTransportPolicy: 'all'
     }
 };
@@ -265,33 +295,41 @@ function initDiscoveryPeer(pin) {
                 console.log('[Discovery] Pairing successful. Token sent.');
                 connectionLog.log('pairing_success', { deviceName: data.deviceName, hostId: lastServerInfo.hostId });
 
-                // Close discovery connection (client should reconnect to Secure Peer)
-                setTimeout(() => conn.close(), 1000);
+                // Mobile closes the discovery connection itself after receiving pair-success
+                // (see app.js line 1663). We just set a safety timeout in case mobile
+                // never closes (e.g., crash or disconnect). 10s is generous enough for
+                // slow networks while preventing leaked connections.
+                setTimeout(() => {
+                    if (conn.open) {
+                        console.log('[Discovery] Safety timeout — closing stale pairing connection');
+                        conn.close();
+                    }
+                }, 10000);
             }
         });
     });
 
+    peerDiscovery._retrying = false;
+
     peerDiscovery.on('disconnected', () => {
+        // Skip if unavailable-id handler is already scheduling a retry
+        if (peerDiscovery._retrying) return;
         console.log('[Discovery] Disconnected from signaling server');
-        // Only reconnect if not already being recreated by error handler
-        if (peerDiscovery && !peerDiscovery.destroyed && !peerDiscovery._reconnecting) {
-            peerDiscovery._reconnecting = true;
+        if (peerDiscovery && !peerDiscovery.destroyed) {
             setTimeout(() => {
                 if (peerDiscovery && !peerDiscovery.destroyed) {
-                    peerDiscovery._reconnecting = false;
                     peerDiscovery.reconnect();
                 }
-            }, 5000);
+            }, 3000);
         }
     });
 
     peerDiscovery.on('error', (err) => {
         console.error('[Discovery] Error:', err.type || err.message);
         if (err.type === 'unavailable-id') {
-            setTimeout(() => initDiscoveryPeer(pin), 5000);
+            peerDiscovery._retrying = true; // Suppress disconnected handler
+            setTimeout(() => initDiscoveryPeer(pin), 3000);
         }
-        // For network errors, let the 'disconnected' handler deal with reconnect
-        // Don't recreate the peer here — that causes a loop
     });
 }
 
@@ -300,6 +338,7 @@ function initDiscoveryPeer(pin) {
 
 // --- 2. SECURE PEER (UUID) ---
 function initSecurePeer(hostId) {
+    if (staleCleanupInterval) { clearInterval(staleCleanupInterval); staleCleanupInterval = null; }
     if (peerSecure) peerSecure.destroy();
 
     const peerId = `keymote-${hostId}`;
@@ -307,7 +346,20 @@ function initSecurePeer(hostId) {
 
     peerSecure = new Peer(peerId, peerConfig);
 
+    // Detect if signaling server is unreachable (6s timeout)
+    signalingConnected = false;
+    if (signalingTimeout) clearTimeout(signalingTimeout);
+    signalingTimeout = setTimeout(() => {
+        if (!signalingConnected && peerSecure && !peerSecure.destroyed) {
+            console.error('[Secure] Signaling server unreachable after 6s');
+            connectionLog.log('signaling_timeout', { host: 'PeerJS Cloud (0.peerjs.com)' });
+            updateStatus('Error', 'Signaling server unreachable');
+        }
+    }, 6000);
+
     peerSecure.on('open', (id) => {
+        signalingConnected = true;
+        if (signalingTimeout) { clearTimeout(signalingTimeout); signalingTimeout = null; }
         console.log('[Secure] Ready:', id);
         connectionLog.log('secure_ready', { peerId: id });
         // Show "Internet Ready" badge
@@ -323,6 +375,16 @@ function initSecurePeer(hostId) {
     peerSecure.on('connection', (conn) => {
         console.log('[Secure] Incoming connection from:', conn.peer);
         conn.isAuthenticated = false; // Default to blocked
+
+        // Clear any pending reconnect timeouts from previous connections
+        if (peerSecure && peerSecure.connections) {
+            Object.values(peerSecure.connections).flat().forEach(c => {
+                if (c.reconnectTimeout) {
+                    clearTimeout(c.reconnectTimeout);
+                    c.reconnectTimeout = null;
+                }
+            });
+        }
 
         conn.on('data', async (data) => {
             // Auth Handshake
@@ -408,11 +470,22 @@ function initSecurePeer(hostId) {
                 updateStatus('Reconnecting', `Waiting for ${conn.deviceName}...`);
                 el.deviceBadge.style.display = 'inline-flex';
                 el.qrSection.style.display = 'none';
-                // Fall back to normal "Waiting" after 60s if no reconnect
+
+                // ACTIVE RECONNECTION: Ensure Secure Peer is connected to signaling
+                // server so mobile can find us when it tries to reconnect.
+                if (peerSecure && peerSecure.disconnected && !peerSecure.destroyed) {
+                    console.log('[Secure] Signaling server disconnected — reconnecting immediately');
+                    connectionLog.log('signaling_reconnect_on_close', { reason: 'authenticated_client_lost' });
+                    try { peerSecure.reconnect(); } catch (e) {
+                        console.error('[Secure] Signaling reconnect failed:', e.message);
+                    }
+                }
+
+                // Fall back to normal "Waiting" after 30s if no reconnect
                 conn.reconnectTimeout = setTimeout(() => {
                     console.log('[Secure] Reconnect timeout — returning to waiting state');
                     updateGlobalStatus();
-                }, 60000);
+                }, 30000);
             } else {
                 updateGlobalStatus();
             }
@@ -421,51 +494,81 @@ function initSecurePeer(hostId) {
         conn.on('error', (err) => console.error('[Secure] Conn Error:', err));
     });
 
-    // When a new connection arrives, clear any pending reconnect timeout
-    peerSecure.on('connection', function clearReconnectTimer() {
-        if (peerSecure && peerSecure.connections) {
-            Object.values(peerSecure.connections).flat().forEach(c => {
-                if (c.reconnectTimeout) {
-                    clearTimeout(c.reconnectTimeout);
-                    c.reconnectTimeout = null;
-                }
-            });
-        }
-    });
-
     // Auto-reconnect to signaling server (keeps call capability alive)
+    peerSecure._retrying = false;
+
     peerSecure.on('disconnected', () => {
+        // Skip if error handler is already scheduling a retry
+        if (peerSecure._retrying) return;
         console.log('[Secure] Disconnected from signaling server');
-        // Only reconnect if not already being recreated by error handler
-        if (peerSecure && !peerSecure.destroyed && !peerSecure._reconnecting) {
-            peerSecure._reconnecting = true;
+        if (peerSecure && !peerSecure.destroyed) {
             setTimeout(() => {
                 if (peerSecure && !peerSecure.destroyed) {
-                    peerSecure._reconnecting = false;
                     peerSecure.reconnect();
                 }
-            }, 5000);
+            }, 3000);
         }
     });
 
     peerSecure.on('error', (err) => {
-        console.error('[Secure] Error:', err.type || err.message);
-        // For network errors, let the 'disconnected' handler deal with reconnect
-        // Don't recreate the peer here — that causes a reconnection loop
+        const errType = err.type || 'unknown';
+        console.error('[Secure] Error:', errType, err.message);
+        connectionLog.log('secure_error', { type: errType, message: err.message });
+
+        if (errType === 'unavailable-id') {
+            peerSecure._retrying = true; // Suppress disconnected handler
+            console.log('[Secure] Peer ID taken — re-creating in 3s...');
+            if (lastServerInfo && lastServerInfo.hostId) {
+                setTimeout(() => initSecurePeer(lastServerInfo.hostId), 3000);
+            }
+        } else if (errType === 'network') {
+            // Network error — safety timer in case 'disconnected' doesn't fire
+            console.log('[Secure] Network error — safety reconnect in 3s if needed');
+            setTimeout(() => {
+                if (peerSecure && peerSecure.disconnected && !peerSecure.destroyed && !peerSecure._retrying) {
+                    console.log('[Secure] Safety reconnect triggered (disconnected handler missed)');
+                    connectionLog.log('secure_safety_reconnect', { reason: 'network_error_fallback' });
+                    peerSecure.reconnect();
+                }
+            }, 3000);
+        } else if (errType === 'server-error') {
+            peerSecure._retrying = true; // Suppress disconnected handler
+            console.log('[Secure] Server error — re-creating in 3s...');
+            if (lastServerInfo && lastServerInfo.hostId) {
+                setTimeout(() => initSecurePeer(lastServerInfo.hostId), 3000);
+            }
+        }
     });
+
+    // Start periodic stale connection cleanup
+    startStaleConnectionCleanup();
+}
+
+// Check if a PeerJS DataConnection is truly alive by verifying both
+// PeerJS's own .open flag AND the underlying WebRTC DataChannel state.
+// PeerJS .open can be stale after network disruptions — the DataChannel
+// readyState is the ground truth. Mobile app uses the same technique
+// (see app.js lines 2134, 2304).
+function isConnectionAlive(conn) {
+    if (!conn || !conn.open || !conn.isAuthenticated) return false;
+    const dc = conn.dataChannel;
+    if (dc && (dc.readyState === 'closed' || dc.readyState === 'closing')) {
+        return false;
+    }
+    return true;
 }
 
 // Helpers for Status
 function getSecureClientCount() {
     if (!peerSecure || !peerSecure.connections) return 0;
     const conns = Object.values(peerSecure.connections).flat();
-    return conns.filter(c => c.open && c.isAuthenticated).length;
+    return conns.filter(c => isConnectionAlive(c)).length;
 }
 
 function getFirstSecureConnection() {
     if (!peerSecure || !peerSecure.connections) return null;
     const conns = Object.values(peerSecure.connections).flat();
-    return conns.find(c => c.open && c.isAuthenticated);
+    return conns.find(c => isConnectionAlive(c));
 }
 
 // Helper to broadcast to Authenticated Clients only
@@ -473,10 +576,37 @@ function broadcastToAuthenticated(data) {
     if (!peerSecure || !peerSecure.connections) return;
     const connections = Object.values(peerSecure.connections).flat();
     connections.forEach(conn => {
-        if (conn.open && conn.isAuthenticated) {
-            conn.send(data);
+        if (isConnectionAlive(conn)) {
+            try {
+                conn.send(data);
+            } catch (e) {
+                console.warn('[Secure] Failed to send to', conn.deviceName, ':', e.message);
+            }
         }
     });
+}
+
+// Periodic cleanup: detect and close connections where the DataChannel
+// has died but PeerJS still considers them "open". Runs every 15s.
+let staleCleanupInterval = null;
+
+function startStaleConnectionCleanup() {
+    if (staleCleanupInterval) clearInterval(staleCleanupInterval);
+    staleCleanupInterval = setInterval(() => {
+        if (!peerSecure || !peerSecure.connections) return;
+        const conns = Object.values(peerSecure.connections).flat();
+        conns.forEach(conn => {
+            if (!conn.open) return;
+            const dc = conn.dataChannel;
+            if (dc && (dc.readyState === 'closed' || dc.readyState === 'closing')) {
+                console.warn(`[Cleanup] Stale connection detected for ${conn.deviceName || conn.peer} (DC: ${dc.readyState})`);
+                connectionLog.log('stale_cleanup', { peer: conn.peer, deviceName: conn.deviceName, dcState: dc.readyState });
+                conn.isAuthenticated = false;
+                try { conn.close(); } catch {}
+                updateGlobalStatus();
+            }
+        });
+    }, 15000);
 }
 
 // Helper: get system audio stream (loopback) via Electron
@@ -801,11 +931,8 @@ async function startScreenShare(recipientPeerId, retryCount = 0, videoOnly = fal
         activeScreenCall.on('error', (err) => {
             console.error('[Renderer] Screen call error:', err);
             cleanupScreenShare();
-            if (retryCount < 2) {
-                const delay = (retryCount + 1) * 2000;
-                console.log(`[Renderer] Retrying screen share in ${delay / 1000}s (attempt ${retryCount + 2}/3)...`);
-                screenShareRetryTimer = setTimeout(() => startScreenShare(recipientPeerId, retryCount + 1, screenShareVideoOnly), delay);
-            }
+            console.log(`[Renderer] Retrying screen share in 3s...`);
+            screenShareRetryTimer = setTimeout(() => startScreenShare(recipientPeerId, retryCount + 1, screenShareVideoOnly), 3000);
         });
 
         // Start adaptive quality monitoring
@@ -878,11 +1005,8 @@ async function startAudioShare(recipientPeerId, retryCount = 0) {
             audioStream.getTracks().forEach(t => t.stop());
             window.electronAPI.setSystemMute(false);
             activeAudioCall = null;
-            if (retryCount < 2) {
-                const delay = (retryCount + 1) * 2000;
-                console.log(`[Renderer] Retrying audio share in ${delay / 1000}s (attempt ${retryCount + 2}/3)...`);
-                audioShareRetryTimer = setTimeout(() => startAudioShare(recipientPeerId, retryCount + 1), delay);
-            }
+            console.log(`[Renderer] Retrying audio share in 3s...`);
+            audioShareRetryTimer = setTimeout(() => startAudioShare(recipientPeerId, retryCount + 1), 3000);
         });
 
         console.log('[Renderer] Audio Share Started (PC muted)');
@@ -909,10 +1033,23 @@ async function init() {
     el.closeBtn?.addEventListener('click', () => window.electronAPI.closeWindow());
 
     if (el.startupToggle) {
-        const isEnabled = await window.electronAPI.getAutoLaunch();
-        el.startupToggle.checked = isEnabled;
+        const status = await window.electronAPI.getAutoLaunch();
+        el.startupToggle.checked = status.enabled;
+        if (!status.success) {
+            el.startupToggle.disabled = true;
+            el.startupToggle.title = status.error || 'Auto-launch unavailable';
+        }
         el.startupToggle.addEventListener('change', async () => {
-            await window.electronAPI.setAutoLaunch(el.startupToggle.checked);
+            const desired = el.startupToggle.checked;
+            el.startupToggle.disabled = true;
+            const result = await window.electronAPI.setAutoLaunch(desired);
+            el.startupToggle.disabled = false;
+            if (!result.success) {
+                // Revert toggle and notify user
+                el.startupToggle.checked = !desired;
+                console.error('[AutoLaunch]', result.error);
+                alert('Failed to update startup setting: ' + (result.error || 'Unknown error'));
+            }
         });
     }
 

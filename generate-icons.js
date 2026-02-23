@@ -118,7 +118,7 @@ async function generateDesktopIcon() {
 
   const info = await sharp(svgBuffer, { density: 384 })
     .trim() // Trim increases visual size by 25% if there was padding
-    .resize(512, null, { fit: 'inside' })
+    .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .png()
     .toFile(path.join(ROOT, 'assets', 'icon.png'));
   console.log(`  assets/icon.png (${info.width}x${info.height})`);

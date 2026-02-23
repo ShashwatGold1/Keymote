@@ -28,7 +28,9 @@
       "Bash(find:*)",
       "Bash(ls:*)",
       "Bash(test:*)",
-      "Bash(file:*)"
+      "Bash(file:*)",
+      "Bash(c:/Users/ojhas/OneDrive/Desktop/MicrophoneS/keymote-app/android/gradlew.bat:*)",
+      "Bash(npm --version:*)"
     ]
   }
 }

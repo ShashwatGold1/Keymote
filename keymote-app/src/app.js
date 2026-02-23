@@ -154,6 +154,7 @@ class RemoteInputApp {
             typingDelayPlus: document.getElementById('typingDelayPlus'),
             hapticFeedbackInput: document.getElementById('hapticFeedbackInput'),
             overlayBubbleInput: document.getElementById('overlayBubbleInput'),
+            overlayBubbleNote: document.getElementById('overlayBubbleNote'),
             // Floating toolbar elements
             floatingToolbar: document.getElementById('floatingToolbar'),
             toolbarHandle: document.getElementById('toolbarHandle'),
@@ -1064,6 +1065,11 @@ class RemoteInputApp {
         // Overlay Bubble Toggle
         if (this.el.overlayBubbleInput) {
             this.el.overlayBubbleInput.onchange = (e) => {
+                // Block enabling if on public internet
+                if (e.target.checked && this._isLocalNetwork === false) {
+                    e.target.checked = false;
+                    return;
+                }
                 this.overlayBubbleEnabled = e.target.checked;
                 localStorage.setItem('overlayBubble', this.overlayBubbleEnabled);
                 if (this.overlayBubbleEnabled) {
@@ -1593,37 +1599,31 @@ class RemoteInputApp {
         }
 
         // --- Connection setup: opens data channel to target and wires handlers ---
+        let connectTimeoutId = null;
+        let handoffInProgress = false; // Prevents Discovery close from triggering reconnect
+
         const setupConnection = () => {
             const conn = this.peer.connect(targetId);
 
-            // 10s timeout (fast failure detection)
-            const connectTimeout = setTimeout(() => {
+            // 3s timeout (fast failure detection)
+            connectTimeoutId = setTimeout(() => {
                 if (!this.isConnected || !this.isAuthenticated) {
-                    console.error('[P2P] Connection timeout (10s)');
-                    connectionLog.log('connect_timeout', { targetId, isSecure });
-
                     this.connectionAttempts = (this.connectionAttempts || 0) + 1;
-                    if (this.connectionAttempts <= 3) {
-                        const delay = 1000 * Math.pow(2, this.connectionAttempts - 1); // 1s, 2s, 4s
-                        console.log(`[P2P] Retrying in ${delay / 1000}s (attempt ${this.connectionAttempts}/3)...`);
-                        if (!silent) {
-                            this.updateLoginStatus(`Reconnecting (${this.connectionAttempts}/3)...`, 'connecting');
-                            this.showProcessingOverlay(`Retrying... (${this.connectionAttempts}/3)`);
-                        }
-                        setTimeout(() => {
-                            // Use pinOrHostId (NOT targetId) to avoid double keymote- prefix
-                            this.connectP2P(pinOrHostId, isSecure, token, silent);
-                        }, delay);
-                    } else {
-                        console.error('[P2P] Max attempts reached');
-                        this.showErrorOverlay('Connection timeout - please try again');
-                        this.connectionAttempts = 0;
+                    console.error(`[P2P] Connection timeout (3s) — retry #${this.connectionAttempts}`);
+                    connectionLog.log('connect_timeout', { targetId, isSecure, attempt: this.connectionAttempts });
+
+                    if (!silent) {
+                        this.updateLoginStatus(`Reconnecting (#${this.connectionAttempts})...`, 'connecting');
+                        this.showProcessingOverlay(`Retrying... (#${this.connectionAttempts})`);
                     }
+                    setTimeout(() => {
+                        this.connectP2P(pinOrHostId, isSecure, token, silent);
+                    }, 3000);
                 }
-            }, 10000);
+            }, 3000);
 
             conn.on('open', () => {
-                clearTimeout(connectTimeout);
+                clearTimeout(connectTimeoutId);
                 this.connectionAttempts = 0;
                 console.log('[P2P] Data Channel Open');
                 connectionLog.log('data_channel_open', { targetId, isSecure });
@@ -1657,15 +1657,15 @@ class RemoteInputApp {
                         this.setDefaultDevice(data.hostId);
                     }
 
-                    // Close only the discovery DATA connection, keep the Peer alive.
-                    // connectP2P will detect the live peer and reuse it (fast path),
-                    // skipping the ~1-3s signaling server roundtrip.
+                    // Mark handoff so the Discovery close event doesn't trigger reconnect
+                    handoffInProgress = true;
                     conn.close();
                     this.connectP2P(data.hostId, true, data.token, silent);
                     return;
                 }
 
                 if (data.type === 'auth-result') {
+                    clearTimeout(connectTimeoutId); // Auth done — cancel any pending timeout
                     if (data.success) {
                         console.log('[P2P] Auth Successful!');
                         connectionLog.log('auth_success', { computerName: this.computerName });
@@ -1698,10 +1698,19 @@ class RemoteInputApp {
                     console.log('[P2P] Received overlay relay info:', data.ips, 'port:', data.port);
                     this._overlayRelayInfo = { ips: data.ips, port: data.port };
                     this.saveOverlayRelayInfo(data.ips, data.port);
-                    // Start overlay only if enabled in settings
-                    if (this.overlayBubbleEnabled) {
-                        this.startFloatingOverlay();
-                    }
+                    // Check if desktop is reachable on LAN
+                    this.isOnLocalNetwork(data.ips, data.port).then(isLocal => {
+                        this._isLocalNetwork = isLocal;
+                        this.updateOverlayBubbleUI(isLocal);
+                        if (!isLocal) {
+                            console.log('[P2P] Public internet detected — overlay bubble disabled');
+                            return;
+                        }
+                        // Start overlay only if enabled in settings and on local network
+                        if (this.overlayBubbleEnabled) {
+                            this.startFloatingOverlay();
+                        }
+                    });
                     return;
                 }
 
@@ -1709,21 +1718,21 @@ class RemoteInputApp {
             });
 
             conn.on('close', () => {
+                clearTimeout(connectTimeoutId);
                 console.log(`[P2P] Connection closed (${isSecure ? 'Secure' : 'Discovery'})`);
                 connectionLog.log('connection_closed', { reason: 'peer_closed', isSecure });
 
-                if (isSecure) {
+                if (isSecure && this.isAuthenticated) {
                     this.isConnected = false;
                     this.updateStatus('error', 'Disconnected');
                     this.handleConnectionLost();
                 }
-                // Discovery close is expected during pairing handoff — don't
-                // trigger handleConnectionLost or it destroys the peer we need to reuse.
+                // Discovery close during handoff or unauthenticated close — ignore
             });
 
             conn.on('error', (err) => {
                 console.error('[P2P] Conn Error:', err);
-                clearTimeout(connectTimeout);
+                clearTimeout(connectTimeoutId);
                 if (!silent) {
                     this.updateLoginStatus('Connection Failed', 'error');
                     this.showErrorOverlay('Connection Failed');
@@ -2118,7 +2127,13 @@ class RemoteInputApp {
     }
 
     handleResume() {
-        const bgDuration = this.backgroundTimestamp ? Date.now() - this.backgroundTimestamp : 0;
+        // Debounce: multiple sources (visibilitychange, appStateChange, resume) can
+        // fire simultaneously. Only process once per 1s window.
+        const now = Date.now();
+        if (this._lastResumeTime && now - this._lastResumeTime < 1000) return;
+        this._lastResumeTime = now;
+
+        const bgDuration = this.backgroundTimestamp ? now - this.backgroundTimestamp : 0;
         console.log(`[Background] Resuming after ${Math.round(bgDuration / 1000)}s`);
         connectionLog.log('resume', { bgDuration: Math.round(bgDuration / 1000) });
         this.backgroundTimestamp = null;
@@ -2194,6 +2209,36 @@ class RemoteInputApp {
                 console.log('[ForegroundService] Stopped');
             }
         } catch { }
+    }
+
+    // Check if desktop's local IPs are reachable (same network = LAN, unreachable = public internet)
+    async isOnLocalNetwork(ips, port) {
+        for (const ip of ips) {
+            try {
+                const ws = new WebSocket(`ws://${ip}:${port}`);
+                const reachable = await Promise.race([
+                    new Promise(resolve => {
+                        ws.onopen = () => { ws.close(); resolve(true); };
+                        ws.onerror = () => resolve(false);
+                    }),
+                    new Promise(resolve => setTimeout(() => { try { ws.close(); } catch {} resolve(false); }, 2000))
+                ]);
+                if (reachable) return true;
+            } catch { continue; }
+        }
+        return false;
+    }
+
+    // Update overlay bubble toggle based on network type
+    updateOverlayBubbleUI(isLocal) {
+        if (this.el.overlayBubbleInput) {
+            this.el.overlayBubbleInput.disabled = !isLocal;
+            if (!isLocal) {
+                this.el.overlayBubbleInput.checked = false;
+            } else {
+                this.el.overlayBubbleInput.checked = this.overlayBubbleEnabled;
+            }
+        }
     }
 
     // Save overlay relay info to SharedPreferences (accessible by native service in separate process)
@@ -2325,12 +2370,13 @@ class RemoteInputApp {
         this.isAuthenticated = false;
 
         if (this.p2pConn) {
-            this.p2pConn.close();
+            try { this.p2pConn.close(); } catch {}
             this.p2pConn = null;
         }
 
-        // Destroy peer to release the ID/port
-        if (this.peer) {
+        // Keep peer alive if signaling connection is still good (fast-path reconnect).
+        // Only destroy if the peer itself is broken.
+        if (this.peer && (this.peer.destroyed || this.peer.disconnected)) {
             this.peer.destroy();
             this.peer = null;
         }

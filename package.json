@@ -1,6 +1,6 @@
 {
   "name": "keymote",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Turn your phone into a wireless keyboard & mouse for your computer",
   "main": "main.js",
   "scripts": {
@@ -29,7 +29,9 @@
       "!keymote-app/**/*",
       "!dist/**/*",
       "!*.md",
-      "!.git/**/*"
+      "!.git/**/*",
+      "!*.exe",
+      "!*.apk"
     ],
     "win": {
       "target": [
@@ -46,7 +48,7 @@
           ]
         }
       ],
-      "icon": "assets/icon.png",
+      "icon": "assets/icon.ico",
       "signAndEditExecutable": false
     },
     "nsis": {
@@ -71,6 +73,7 @@
     "electron": "^28.3.3",
     "electron-builder": "^24.9.1",
     "electron-reload": "^2.0.0-alpha.1",
+    "png-to-ico": "^3.0.1",
     "sharp": "^0.34.5"
   }
 }
