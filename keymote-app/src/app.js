@@ -147,9 +147,11 @@ class RemoteInputApp {
             saveSettingsBtn: document.getElementById('saveSettingsBtn'),
             authStatus: document.getElementById('authStatus'),
             splashDurationInput: document.getElementById('splashDurationInput'),
-            splashDurationValue: document.getElementById('splashDurationValue'),
+            splashDurationMinus: document.getElementById('splashDurationMinus'),
+            splashDurationPlus: document.getElementById('splashDurationPlus'),
             typingDelayInput: document.getElementById('typingDelayInput'),
-            typingDelayValue: document.getElementById('typingDelayValue'),
+            typingDelayMinus: document.getElementById('typingDelayMinus'),
+            typingDelayPlus: document.getElementById('typingDelayPlus'),
             hapticFeedbackInput: document.getElementById('hapticFeedbackInput'),
             overlayBubbleInput: document.getElementById('overlayBubbleInput'),
             // Floating toolbar elements
@@ -163,16 +165,15 @@ class RemoteInputApp {
             fsScrollDown: document.getElementById('fsScrollDown'),
             fsVoiceBtn: document.getElementById('fsVoiceBtn'),
             // Screen settings elements
-            screenOffsetX: document.getElementById('screenOffsetX'),
             screenOffsetXValue: document.getElementById('screenOffsetXValue'),
             screenOffsetXMinus: document.getElementById('screenOffsetXMinus'),
             screenOffsetXPlus: document.getElementById('screenOffsetXPlus'),
-            screenOffsetY: document.getElementById('screenOffsetY'),
             screenOffsetYValue: document.getElementById('screenOffsetYValue'),
             screenOffsetYMinus: document.getElementById('screenOffsetYMinus'),
             screenOffsetYPlus: document.getElementById('screenOffsetYPlus'),
-            screenZoom: document.getElementById('screenZoom'),
             screenZoomValue: document.getElementById('screenZoomValue'),
+            screenZoomMinus: document.getElementById('screenZoomMinus'),
+            screenZoomPlus: document.getElementById('screenZoomPlus'),
             resetScreenSettings: document.getElementById('resetScreenSettings'),
             screenImage: document.getElementById('screenImage'),
             // QR Scanner button
@@ -189,9 +190,6 @@ class RemoteInputApp {
         // Sync Settings UI with State
         if (this.el.typingDelayInput) {
             this.el.typingDelayInput.value = this.typingDelay;
-            if (this.el.typingDelayValue) {
-                this.el.typingDelayValue.textContent = this.typingDelay + ' ms';
-            }
             if (this.el.hapticFeedbackInput) {
                 this.el.hapticFeedbackInput.checked = this.hapticFeedback;
             }
@@ -1001,7 +999,12 @@ class RemoteInputApp {
         this.theme = t;
         document.documentElement.setAttribute('data-theme', t);
         localStorage.setItem('theme', t);
-        this.el.theme.textContent = t === 'dark' ? '🌙' : '☀️';
+        const icon = document.getElementById('themeIcon');
+        if (icon) {
+            icon.innerHTML = t === 'dark'
+                ? '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'
+                : '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>';
+        }
     }
 
     setupListeners() {
@@ -1018,32 +1021,36 @@ class RemoteInputApp {
                     this.el.authStatus.textContent = '';
                     this.el.authStatus.className = 'settings-status';
                 }
-                // Set splash duration slider
+                // Set splash duration input (stored in ms, displayed in seconds)
                 const savedSplashDuration = parseInt(localStorage.getItem('splashDuration') || '2500', 10);
-                if (this.el.splashDurationInput) this.el.splashDurationInput.value = savedSplashDuration;
-                if (this.el.splashDurationValue) this.el.splashDurationValue.textContent = (savedSplashDuration / 1000).toFixed(1) + 's';
+                if (this.el.splashDurationInput) this.el.splashDurationInput.value = (savedSplashDuration / 1000).toFixed(1);
                 this.showScreen('settings');
             };
         }
 
-        // Splash duration slider handler
+        // Splash duration stepper + input handler (displayed in seconds, stored in ms)
         if (this.el.splashDurationInput) {
-            this.el.splashDurationInput.oninput = () => {
-                const val = parseInt(this.el.splashDurationInput.value, 10);
-                if (this.el.splashDurationValue) this.el.splashDurationValue.textContent = (val / 1000).toFixed(1) + 's';
-                localStorage.setItem('splashDuration', val.toString());
+            const updateSplash = (sec) => {
+                sec = Math.max(0, Math.min(10, Math.round(sec * 2) / 2)); // clamp, snap to 0.5
+                this.el.splashDurationInput.value = sec.toFixed(1);
+                localStorage.setItem('splashDuration', Math.round(sec * 1000).toString());
             };
+            this.el.splashDurationInput.onchange = () => updateSplash(parseFloat(this.el.splashDurationInput.value) || 0);
+            if (this.el.splashDurationMinus) this.el.splashDurationMinus.onclick = () => updateSplash((parseFloat(this.el.splashDurationInput.value) || 0) - 0.5);
+            if (this.el.splashDurationPlus) this.el.splashDurationPlus.onclick = () => updateSplash((parseFloat(this.el.splashDurationInput.value) || 0) + 0.5);
         }
 
-        // Stability Delay Listener
+        // Stability Delay stepper + input handler (ms)
         if (this.el.typingDelayInput) {
-            this.el.typingDelayInput.oninput = (e) => {
-                this.typingDelay = parseInt(e.target.value, 10);
-                if (this.el.typingDelayValue) {
-                    this.el.typingDelayValue.textContent = this.typingDelay + ' ms';
-                }
-                localStorage.setItem('typingDelay', this.typingDelay);
+            const updateDelay = (val) => {
+                val = Math.max(10, Math.min(500, Math.round(val / 10) * 10)); // clamp, snap to 10
+                this.el.typingDelayInput.value = val;
+                this.typingDelay = val;
+                localStorage.setItem('typingDelay', val);
             };
+            this.el.typingDelayInput.onchange = () => updateDelay(parseInt(this.el.typingDelayInput.value, 10) || 50);
+            if (this.el.typingDelayMinus) this.el.typingDelayMinus.onclick = () => updateDelay((parseInt(this.el.typingDelayInput.value, 10) || 50) - 10);
+            if (this.el.typingDelayPlus) this.el.typingDelayPlus.onclick = () => updateDelay((parseInt(this.el.typingDelayInput.value, 10) || 50) + 10);
         }
 
         // Haptic Feedback Listener
@@ -1276,11 +1283,8 @@ class RemoteInputApp {
                 this.screenOffsetX = 0;
                 this.screenOffsetY = 0;
                 this.screenZoom = 100;
-                if (this.el.screenOffsetX) this.el.screenOffsetX.value = 0;
                 if (this.el.screenOffsetXValue) this.el.screenOffsetXValue.value = 0;
-                if (this.el.screenOffsetY) this.el.screenOffsetY.value = 0;
                 if (this.el.screenOffsetYValue) this.el.screenOffsetYValue.value = 0;
-                if (this.el.screenZoom) this.el.screenZoom.value = 100;
                 if (this.el.screenZoomValue) this.el.screenZoomValue.value = 100;
                 localStorage.setItem('screenOffsetX', '0');
                 localStorage.setItem('screenOffsetY', '0');
@@ -1455,7 +1459,6 @@ class RemoteInputApp {
                     // Apply zoom
                     if (Math.abs(zoomDelta) > 0.5) {
                         this.screenZoom = Math.max(50, Math.min(400, this.screenZoom + zoomDelta));
-                        if (this.el.screenZoom) this.el.screenZoom.value = Math.min(this.screenZoom, 400);
                         if (this.el.screenZoomValue) this.el.screenZoomValue.value = Math.round(this.screenZoom);
                         localStorage.setItem('screenZoom', Math.round(this.screenZoom).toString());
                     }
@@ -1464,9 +1467,7 @@ class RemoteInputApp {
                     if (Math.abs(panDx) > 0.5 || Math.abs(panDy) > 0.5) {
                         this.screenOffsetX = Math.max(-200, Math.min(200, this.screenOffsetX + panDx));
                         this.screenOffsetY = Math.max(-200, Math.min(200, this.screenOffsetY + panDy));
-                        if (this.el.screenOffsetX) this.el.screenOffsetX.value = this.screenOffsetX;
                         if (this.el.screenOffsetXValue) this.el.screenOffsetXValue.value = Math.round(this.screenOffsetX);
-                        if (this.el.screenOffsetY) this.el.screenOffsetY.value = this.screenOffsetY;
                         if (this.el.screenOffsetYValue) this.el.screenOffsetYValue.value = Math.round(this.screenOffsetY);
                         localStorage.setItem('screenOffsetX', Math.round(this.screenOffsetX).toString());
                         localStorage.setItem('screenOffsetY', Math.round(this.screenOffsetY).toString());
@@ -2609,7 +2610,6 @@ class RemoteInputApp {
     setupScreenSettingsListeners() {
         const updateX = (val) => {
             this.screenOffsetX = Math.max(-200, Math.min(200, val));
-            if (this.el.screenOffsetX) this.el.screenOffsetX.value = this.screenOffsetX;
             if (this.el.screenOffsetXValue) this.el.screenOffsetXValue.value = this.screenOffsetX;
             localStorage.setItem('screenOffsetX', this.screenOffsetX.toString());
             this.applyScreenTransform();
@@ -2617,7 +2617,6 @@ class RemoteInputApp {
 
         const updateY = (val) => {
             this.screenOffsetY = Math.max(-200, Math.min(200, val));
-            if (this.el.screenOffsetY) this.el.screenOffsetY.value = this.screenOffsetY;
             if (this.el.screenOffsetYValue) this.el.screenOffsetYValue.value = this.screenOffsetY;
             localStorage.setItem('screenOffsetY', this.screenOffsetY.toString());
             this.applyScreenTransform();
@@ -2625,17 +2624,12 @@ class RemoteInputApp {
 
         const updateZoom = (val) => {
             this.screenZoom = Math.max(50, Math.min(400, val));
-            if (this.el.screenZoom) this.el.screenZoom.value = this.screenZoom;
             if (this.el.screenZoomValue) this.el.screenZoomValue.value = this.screenZoom;
             localStorage.setItem('screenZoom', this.screenZoom.toString());
             this.applyScreenTransform();
         };
 
-        // X offset controls
-        if (this.el.screenOffsetX) {
-            this.el.screenOffsetX.value = this.screenOffsetX;
-            this.el.screenOffsetX.oninput = () => updateX(parseInt(this.el.screenOffsetX.value, 10));
-        }
+        // X offset: input + stepper buttons
         if (this.el.screenOffsetXValue) {
             this.el.screenOffsetXValue.value = this.screenOffsetX;
             this.el.screenOffsetXValue.onchange = () => updateX(parseInt(this.el.screenOffsetXValue.value, 10) || 0);
@@ -2643,11 +2637,7 @@ class RemoteInputApp {
         if (this.el.screenOffsetXMinus) this.el.screenOffsetXMinus.onclick = () => updateX(this.screenOffsetX - 10);
         if (this.el.screenOffsetXPlus) this.el.screenOffsetXPlus.onclick = () => updateX(this.screenOffsetX + 10);
 
-        // Y offset controls
-        if (this.el.screenOffsetY) {
-            this.el.screenOffsetY.value = this.screenOffsetY;
-            this.el.screenOffsetY.oninput = () => updateY(parseInt(this.el.screenOffsetY.value, 10));
-        }
+        // Y offset: input + stepper buttons
         if (this.el.screenOffsetYValue) {
             this.el.screenOffsetYValue.value = this.screenOffsetY;
             this.el.screenOffsetYValue.onchange = () => updateY(parseInt(this.el.screenOffsetYValue.value, 10) || 0);
@@ -2655,15 +2645,13 @@ class RemoteInputApp {
         if (this.el.screenOffsetYMinus) this.el.screenOffsetYMinus.onclick = () => updateY(this.screenOffsetY - 10);
         if (this.el.screenOffsetYPlus) this.el.screenOffsetYPlus.onclick = () => updateY(this.screenOffsetY + 10);
 
-        // Zoom controls
-        if (this.el.screenZoom) {
-            this.el.screenZoom.value = this.screenZoom;
-            this.el.screenZoom.oninput = () => updateZoom(parseInt(this.el.screenZoom.value, 10));
-        }
+        // Zoom: input + stepper buttons
         if (this.el.screenZoomValue) {
             this.el.screenZoomValue.value = this.screenZoom;
             this.el.screenZoomValue.onchange = () => updateZoom(parseInt(this.el.screenZoomValue.value, 10) || 100);
         }
+        if (this.el.screenZoomMinus) this.el.screenZoomMinus.onclick = () => updateZoom(this.screenZoom - 5);
+        if (this.el.screenZoomPlus) this.el.screenZoomPlus.onclick = () => updateZoom(this.screenZoom + 5);
 
         // Reset button
         if (this.el.resetScreenSettings) {

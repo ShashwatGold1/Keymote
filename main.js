@@ -9,8 +9,20 @@ const path = require('path');
 const QRCode = require('qrcode');
 const os = require('os');
 const fs = require('fs');
+const http = require('http');
 const { WebSocketServer } = require('ws');
 const AutoLaunch = require('auto-launch');
+
+// Enable live reload in development
+const isDev = !app.isPackaged;
+if (isDev) {
+    try {
+        require('electron-reload')(__dirname, {
+            electron: path.join(__dirname, 'node_modules', '.bin', 'electron'),
+            hardResetMethod: 'exit'
+        });
+    } catch (_) { }
+}
 
 // Import input injectors
 let keyboardInjector;
@@ -150,6 +162,7 @@ function createWindow() {
         height: 660,
         minWidth: 300,
         minHeight: 500,
+        icon: path.join(__dirname, 'assets', 'icon.png'),
         backgroundColor: nativeTheme.shouldUseDarkColors ? '#0d0d0f' : '#ffffff',
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
@@ -162,6 +175,11 @@ function createWindow() {
     });
 
     mainWindow.loadFile('index.html');
+
+    // Open DevTools in development
+    if (isDev) {
+        mainWindow.webContents.openDevTools({ mode: 'detach' });
+    }
 
     // Track when window is ready to receive messages
     mainWindow.webContents.on('did-finish-load', () => {
@@ -293,6 +311,62 @@ function startOverlayRelay(retryCount = 0) {
     });
 }
 
+// --- Mobile App HTTP Server ---
+let mobileHttpServer = null;
+const MOBILE_APP_PORT = 8080;
+const MOBILE_APP_DIR = path.join(__dirname, 'keymote-app', 'src');
+
+const MIME_TYPES = {
+    '.html': 'text/html',
+    '.css': 'text/css',
+    '.js': 'application/javascript',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.ico': 'image/x-icon',
+};
+
+function startMobileAppServer() {
+    mobileHttpServer = http.createServer((req, res) => {
+        let filePath = req.url === '/' ? '/index.html' : req.url;
+        // Prevent directory traversal
+        filePath = path.normalize(filePath).replace(/^(\.\.[\/\\])+/, '');
+        const fullPath = path.join(MOBILE_APP_DIR, filePath);
+
+        // Ensure the resolved path is within MOBILE_APP_DIR
+        if (!fullPath.startsWith(MOBILE_APP_DIR)) {
+            res.writeHead(403);
+            res.end('Forbidden');
+            return;
+        }
+
+        const ext = path.extname(fullPath).toLowerCase();
+        const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+        fs.readFile(fullPath, (err, data) => {
+            if (err) {
+                res.writeHead(404);
+                res.end('Not Found');
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': contentType });
+            res.end(data);
+        });
+    });
+
+    mobileHttpServer.listen(MOBILE_APP_PORT, '0.0.0.0', () => {
+        console.log(`[Main] Mobile App Server running on http://localhost:${MOBILE_APP_PORT}`);
+    });
+
+    mobileHttpServer.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.error(`[Main] Port ${MOBILE_APP_PORT} already in use. Mobile app server not started.`);
+        } else {
+            console.error('[Main] Mobile app server error:', err.message);
+        }
+    });
+}
+
 function getLocalIPs() {
     const interfaces = os.networkInterfaces();
     const ips = [];
@@ -310,7 +384,7 @@ function getLocalIPs() {
  * Create system tray icon
  */
 function createTray() {
-    const iconPath = path.join(__dirname, 'assets', 'icon.png');
+    const iconPath = path.join(__dirname, 'assets', 'tray-icon.png');
     tray = new Tray(iconPath);
 
     const contextMenu = Menu.buildFromTemplate([
@@ -356,7 +430,7 @@ async function sendServerInfoToRenderer() {
         localIPs: getLocalIPs()
     });
     console.log(`[Main] Connection PIN: ${SESSION_PIN} | Computer: ${COMPUTER_NAME}`);
-    console.log(`[Main] Mobile App URL: http://localhost:8080`);
+    console.log(`[Main] Mobile App URL: http://localhost:${MOBILE_APP_PORT}`);
 }
 
 /**
@@ -367,6 +441,9 @@ async function initializeServices() {
         // Initialize injectors
         if (keyboardInjector) keyboardInjector.initialize();
         if (mouseInjector) mouseInjector.initialize();
+
+        // Start mobile app HTTP server
+        startMobileAppServer();
 
         // Start overlay WebSocket relay
         startOverlayRelay();
@@ -552,6 +629,7 @@ app.on('before-quit', async () => {
     isQuitting = true;
     stopCursorPolling();
     audioMuteInjector.cleanup();
+    if (mobileHttpServer) { mobileHttpServer.close(); mobileHttpServer = null; }
     if (overlayWss) { overlayWss.close(); overlayWss = null; }
 });
 

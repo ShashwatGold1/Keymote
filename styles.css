@@ -65,8 +65,10 @@ body {
   color: var(--accent);
 }
 
-.app-logo svg {
+.app-logo svg,
+.app-logo img {
   stroke: var(--accent);
+  object-fit: contain;
 }
 
 .app-name {

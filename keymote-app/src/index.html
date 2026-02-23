@@ -10,6 +10,7 @@
     <meta name="apple-mobile-web-app-title" content="Keymote">
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="icon-192.png">
+    <link rel="icon" type="image/png" href="icon-192.png">
     <title>Keymote</title>
     <link rel="stylesheet" href="styles.css">
 </head>
@@ -49,11 +50,7 @@
     <div id="splashScreen" class="splash-screen">
         <div class="splash-content">
             <div class="splash-logo">
-                <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <rect x="2" y="6" width="20" height="12" rx="2" />
-                    <circle cx="12" cy="12" r="2" />
-                    <path d="M8 12h-2M18 12h-2" />
-                </svg>
+                <img src="logo.png" height="80" alt="Keymote">
             </div>
             <h1 class="splash-title">Keymote</h1>
             <p class="splash-tagline">Remote Control Your PC</p>
@@ -68,11 +65,7 @@
         <div class="login-content">
             <div class="login-header">
                 <div class="login-logo">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="2" y="6" width="20" height="12" rx="2" />
-                        <circle cx="12" cy="12" r="2" />
-                        <path d="M8 12h-2M18 12h-2" />
-                    </svg>
+                    <img src="logo.png" height="80" alt="Keymote">
                 </div>
                 <h2 class="login-title">Connect to PC</h2>
             </div>
@@ -82,10 +75,11 @@
                 <div class="qr-buttons">
                     <button id="scanQrBtn" class="qr-scan-btn">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2">
-                            <path
-                                d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
-                            <rect x="7" y="7" width="10" height="10" rx="1" />
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+                            <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+                            <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+                            <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
                         </svg>
                         <span>Camera</span>
                     </button>
@@ -169,26 +163,41 @@
         <!-- Merged Header + Connection Status -->
         <header class="main-header">
             <div class="brand-logo">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="2" y="6" width="20" height="12" rx="2" />
-                    <circle cx="12" cy="12" r="2" />
-                    <path d="M8 12h-2M18 12h-2" />
-                </svg>
+                <img src="logo.png" height="30" alt="Keymote">
                 <span class="brand-name">Keymote</span>
             </div>
             <div class="header-buttons">
-                <button id="disconnectBtn" class="header-btn" title="Switch Device"
-                    style="background: rgba(239, 68, 68, 0.2); color: #ef4444;">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
-                        <rect x="7" y="7" width="10" height="10" rx="1" />
+                <button id="connectionBtn" class="header-icon-btn connection-btn">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                        class="icon icon-tabler icons-tabler-outline icon-tabler-activity-heartbeat">
+                        <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+                        <path d="M3 12h4.5l1.5 -6l4 12l2 -9l1.5 3h4.5" />
+                    </svg>
+                    <span class="conn-dot"></span>
+                </button>
+                <button id="themeBtn" class="header-icon-btn" title="Toggle Theme">
+                    <svg id="themeIcon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
                     </svg>
                 </button>
-                <button id="settingsBtn" class="header-btn settings-btn">⚙️</button>
-                <button id="themeBtn" class="header-btn theme-btn">🌙</button>
-                <button id="connectionBtn" class="header-btn connection-btn">
-                    <span class="conn-dot"></span>
-                    <span id="latencyDisplay">--ms</span>
+                <button id="disconnectBtn" class="header-icon-btn" title="Switch Device">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+                        <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+                        <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+                        <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+                    </svg>
+                </button>
+                <button id="settingsBtn" class="header-icon-btn" title="Settings">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <path
+                            d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" />
+                        <path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+                    </svg>
                 </button>
             </div>
         </header>
@@ -199,7 +208,7 @@
             <textarea id="inputArea" placeholder="Type here..." rows="2"></textarea>
             <div class="input-corner-btns">
                 <button id="deleteAllBtn" class="corner-btn">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                         stroke-linecap="round" stroke-linejoin="round">
                         <path
                             d="M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21" />
@@ -214,7 +223,8 @@
             <div class="section-header">
                 <span>📺 Screen Share</span>
                 <div style="display:flex;gap:6px;align-items:center;">
-                    <label style="font-size:10px;color:var(--text2);display:flex;align-items:center;gap:4px;cursor:pointer;">
+                    <label
+                        style="font-size:10px;color:var(--text2);display:flex;align-items:center;gap:4px;cursor:pointer;">
                         <input type="checkbox" id="videoOnlyToggle" style="width:14px;height:14px;">
                         Video only
                     </label>
@@ -291,149 +301,149 @@
                 <span>⌨ Keyboard</span>
                 <button id="toggleKeyboard" class="toggle-btn">Show</button>
             </div>
-        </div>
-        <div class="keyboard-section" id="keyboardContainer" style="display:none;">
-            <!-- Quick Shortcuts -->
-            <div class="shortcuts">
-                <button data-shortcut="ctrl+a">SelAll</button>
-                <button data-shortcut="ctrl+c">Copy</button>
-                <button data-shortcut="ctrl+v">Paste</button>
-                <button data-shortcut="ctrl+x">Cut</button>
-                <button data-shortcut="ctrl+z">Undo</button>
-                <button data-shortcut="ctrl+s">Save</button>
-                <button data-shortcut="ctrl+f">Find</button>
-                <button data-shortcut="alt+f4">Quit</button>
-            </div>
-
-            <!-- Physical Keyboard Layout -->
-            <div class="keyboard">
-                <!-- Row 1: Function Keys (moved above numbers) -->
-                <div class="row fn-row">
-                    <button data-key="Escape" class="sm">Esc</button>
-                    <button data-key="F1" class="fn">F1</button>
-                    <button data-key="F2" class="fn">F2</button>
-                    <button data-key="F3" class="fn">F3</button>
-                    <button data-key="F4" class="fn">F4</button>
-                    <button data-key="F5" class="fn">F5</button>
-                    <button data-key="F6" class="fn">F6</button>
-                    <button data-key="F7" class="fn">F7</button>
-                    <button data-key="F8" class="fn">F8</button>
-                    <button data-key="F9" class="fn">F9</button>
-                    <button data-key="F10" class="fn">F10</button>
-                    <button data-key="F11" class="fn">F11</button>
-                    <button data-key="F12" class="fn">F12</button>
+            <div class="keyboard-section" id="keyboardContainer" style="display:none;">
+                <!-- Quick Shortcuts -->
+                <div class="shortcuts">
+                    <button data-shortcut="ctrl+a">SelAll</button>
+                    <button data-shortcut="ctrl+c">Copy</button>
+                    <button data-shortcut="ctrl+v">Paste</button>
+                    <button data-shortcut="ctrl+x">Cut</button>
+                    <button data-shortcut="ctrl+z">Undo</button>
+                    <button data-shortcut="ctrl+s">Save</button>
+                    <button data-shortcut="ctrl+f">Find</button>
+                    <button data-shortcut="alt+f4">Quit</button>
                 </div>
 
-                <!-- Row 2: Numbers with shift symbols -->
-                <div class="row number-row">
-                    <button data-key="`" data-shift="~" class="dual-key"><span class="shift-char">~</span><span
-                            class="main-char">`</span></button>
-                    <button data-key="1" data-shift="!" class="dual-key"><span class="shift-char">!</span><span
-                            class="main-char">1</span></button>
-                    <button data-key="2" data-shift="@" class="dual-key"><span class="shift-char">@</span><span
-                            class="main-char">2</span></button>
-                    <button data-key="3" data-shift="#" class="dual-key"><span class="shift-char">#</span><span
-                            class="main-char">3</span></button>
-                    <button data-key="4" data-shift="$" class="dual-key"><span class="shift-char">$</span><span
-                            class="main-char">4</span></button>
-                    <button data-key="5" data-shift="%" class="dual-key"><span class="shift-char">%</span><span
-                            class="main-char">5</span></button>
-                    <button data-key="6" data-shift="^" class="dual-key"><span class="shift-char">^</span><span
-                            class="main-char">6</span></button>
-                    <button data-key="7" data-shift="&" class="dual-key"><span class="shift-char">&amp;</span><span
-                            class="main-char">7</span></button>
-                    <button data-key="8" data-shift="*" class="dual-key"><span class="shift-char">*</span><span
-                            class="main-char">8</span></button>
-                    <button data-key="9" data-shift="(" class="dual-key"><span class="shift-char">(</span><span
-                            class="main-char">9</span></button>
-                    <button data-key="0" data-shift=")" class="dual-key"><span class="shift-char">)</span><span
-                            class="main-char">0</span></button>
-                    <button data-key="-" data-shift="_" class="dual-key"><span class="shift-char">_</span><span
-                            class="main-char">-</span></button>
-                    <button data-key="=" data-shift="+" class="dual-key"><span class="shift-char">+</span><span
-                            class="main-char">=</span></button>
-                    <button data-key="Backspace" class="wide">⌫</button>
+                <!-- Physical Keyboard Layout -->
+                <div class="keyboard">
+                    <!-- Row 1: Function Keys (moved above numbers) -->
+                    <div class="row fn-row">
+                        <button data-key="Escape" class="sm">Esc</button>
+                        <button data-key="F1" class="fn">F1</button>
+                        <button data-key="F2" class="fn">F2</button>
+                        <button data-key="F3" class="fn">F3</button>
+                        <button data-key="F4" class="fn">F4</button>
+                        <button data-key="F5" class="fn">F5</button>
+                        <button data-key="F6" class="fn">F6</button>
+                        <button data-key="F7" class="fn">F7</button>
+                        <button data-key="F8" class="fn">F8</button>
+                        <button data-key="F9" class="fn">F9</button>
+                        <button data-key="F10" class="fn">F10</button>
+                        <button data-key="F11" class="fn">F11</button>
+                        <button data-key="F12" class="fn">F12</button>
+                    </div>
+
+                    <!-- Row 2: Numbers with shift symbols -->
+                    <div class="row number-row">
+                        <button data-key="`" data-shift="~" class="dual-key"><span class="shift-char">~</span><span
+                                class="main-char">`</span></button>
+                        <button data-key="1" data-shift="!" class="dual-key"><span class="shift-char">!</span><span
+                                class="main-char">1</span></button>
+                        <button data-key="2" data-shift="@" class="dual-key"><span class="shift-char">@</span><span
+                                class="main-char">2</span></button>
+                        <button data-key="3" data-shift="#" class="dual-key"><span class="shift-char">#</span><span
+                                class="main-char">3</span></button>
+                        <button data-key="4" data-shift="$" class="dual-key"><span class="shift-char">$</span><span
+                                class="main-char">4</span></button>
+                        <button data-key="5" data-shift="%" class="dual-key"><span class="shift-char">%</span><span
+                                class="main-char">5</span></button>
+                        <button data-key="6" data-shift="^" class="dual-key"><span class="shift-char">^</span><span
+                                class="main-char">6</span></button>
+                        <button data-key="7" data-shift="&" class="dual-key"><span class="shift-char">&amp;</span><span
+                                class="main-char">7</span></button>
+                        <button data-key="8" data-shift="*" class="dual-key"><span class="shift-char">*</span><span
+                                class="main-char">8</span></button>
+                        <button data-key="9" data-shift="(" class="dual-key"><span class="shift-char">(</span><span
+                                class="main-char">9</span></button>
+                        <button data-key="0" data-shift=")" class="dual-key"><span class="shift-char">)</span><span
+                                class="main-char">0</span></button>
+                        <button data-key="-" data-shift="_" class="dual-key"><span class="shift-char">_</span><span
+                                class="main-char">-</span></button>
+                        <button data-key="=" data-shift="+" class="dual-key"><span class="shift-char">+</span><span
+                                class="main-char">=</span></button>
+                        <button data-key="Backspace" class="wide">⌫</button>
+                    </div>
+
+                    <!-- Row 3: QWERTY -->
+                    <div class="row">
+                        <button data-key="Tab" class="med">Tab</button>
+                        <button data-key="Q" class="k">Q</button>
+                        <button data-key="W" class="k">W</button>
+                        <button data-key="E" class="k">E</button>
+                        <button data-key="R" class="k">R</button>
+                        <button data-key="T" class="k">T</button>
+                        <button data-key="Y" class="k">Y</button>
+                        <button data-key="U" class="k">U</button>
+                        <button data-key="I" class="k">I</button>
+                        <button data-key="O" class="k">O</button>
+                        <button data-key="P" class="k">P</button>
+                        <button data-key="[" data-shift="{" class="dual-key"><span class="shift-char">{</span><span
+                                class="main-char">[</span></button>
+                        <button data-key="]" data-shift="}" class="dual-key"><span class="shift-char">}</span><span
+                                class="main-char">]</span></button>
+                        <button data-key="\" data-shift="|" class="dual-key"><span class="shift-char">|</span><span
+                                class="main-char">\</span></button>
+                    </div>
+
+                    <!-- Row 4: ASDF -->
+                    <div class="row">
+                        <button data-key="CapsLock" class="wide">Caps</button>
+                        <button data-key="A" class="k">A</button>
+                        <button data-key="S" class="k">S</button>
+                        <button data-key="D" class="k">D</button>
+                        <button data-key="F" class="k">F</button>
+                        <button data-key="G" class="k">G</button>
+                        <button data-key="H" class="k">H</button>
+                        <button data-key="J" class="k">J</button>
+                        <button data-key="K" class="k">K</button>
+                        <button data-key="L" class="k">L</button>
+                        <button data-key=";" data-shift=":" class="dual-key"><span class="shift-char">:</span><span
+                                class="main-char">;</span></button>
+                        <button data-key="'" data-shift='"' class="dual-key"><span class="shift-char">"</span><span
+                                class="main-char">'</span></button>
+                        <button data-key="Enter" class="wide">Enter</button>
+                    </div>
+
+                    <!-- Row 5: ZXCV -->
+                    <div class="row">
+                        <button id="shiftKey" class="mod xl">Shift</button>
+                        <button data-key="Z" class="k">Z</button>
+                        <button data-key="X" class="k">X</button>
+                        <button data-key="C" class="k">C</button>
+                        <button data-key="V" class="k">V</button>
+                        <button data-key="B" class="k">B</button>
+                        <button data-key="N" class="k">N</button>
+                        <button data-key="M" class="k">M</button>
+                        <button data-key="," data-shift="<" class="dual-key"><span class="shift-char">&lt;</span><span
+                                class="main-char">,</span></button>
+                        <button data-key="." data-shift=">" class="dual-key"><span class="shift-char">&gt;</span><span
+                                class="main-char">.</span></button>
+                        <button data-key="/" data-shift="?" class="dual-key"><span class="shift-char">?</span><span
+                                class="main-char">/</span></button>
+                        <button data-key="ArrowUp" class="k">▲</button>
+                    </div>
+
+                    <!-- Row 6: Bottom -->
+                    <div class="row">
+                        <button id="ctrlKey" class="mod med">Ctrl</button>
+                        <button id="winKey" class="mod sm">Win</button>
+                        <button id="altKey" class="mod sm">Alt</button>
+                        <button data-key="Space" class="space">Space</button>
+                        <button data-key="ArrowLeft" class="k">◀</button>
+                        <button data-key="ArrowDown" class="k">▼</button>
+                        <button data-key="ArrowRight" class="k">▶</button>
+                    </div>
                 </div>
 
-                <!-- Row 3: QWERTY -->
-                <div class="row">
-                    <button data-key="Tab" class="med">Tab</button>
-                    <button data-key="Q" class="k">Q</button>
-                    <button data-key="W" class="k">W</button>
-                    <button data-key="E" class="k">E</button>
-                    <button data-key="R" class="k">R</button>
-                    <button data-key="T" class="k">T</button>
-                    <button data-key="Y" class="k">Y</button>
-                    <button data-key="U" class="k">U</button>
-                    <button data-key="I" class="k">I</button>
-                    <button data-key="O" class="k">O</button>
-                    <button data-key="P" class="k">P</button>
-                    <button data-key="[" data-shift="{" class="dual-key"><span class="shift-char">{</span><span
-                            class="main-char">[</span></button>
-                    <button data-key="]" data-shift="}" class="dual-key"><span class="shift-char">}</span><span
-                            class="main-char">]</span></button>
-                    <button data-key="\" data-shift="|" class="dual-key"><span class="shift-char">|</span><span
-                            class="main-char">\</span></button>
+                <!-- Media Keys -->
+                <div class="media">
+                    <button data-key="VolumeMute">🔇</button>
+                    <button data-key="VolumeDown">🔉</button>
+                    <button data-key="VolumeUp">🔊</button>
+                    <button data-key="MediaPrevTrack">⏮</button>
+                    <button data-key="MediaPlayPause">⏯</button>
+                    <button data-key="MediaNextTrack">⏭</button>
                 </div>
-
-                <!-- Row 4: ASDF -->
-                <div class="row">
-                    <button data-key="CapsLock" class="wide">Caps</button>
-                    <button data-key="A" class="k">A</button>
-                    <button data-key="S" class="k">S</button>
-                    <button data-key="D" class="k">D</button>
-                    <button data-key="F" class="k">F</button>
-                    <button data-key="G" class="k">G</button>
-                    <button data-key="H" class="k">H</button>
-                    <button data-key="J" class="k">J</button>
-                    <button data-key="K" class="k">K</button>
-                    <button data-key="L" class="k">L</button>
-                    <button data-key=";" data-shift=":" class="dual-key"><span class="shift-char">:</span><span
-                            class="main-char">;</span></button>
-                    <button data-key="'" data-shift='"' class="dual-key"><span class="shift-char">"</span><span
-                            class="main-char">'</span></button>
-                    <button data-key="Enter" class="wide">Enter</button>
-                </div>
-
-                <!-- Row 5: ZXCV -->
-                <div class="row">
-                    <button id="shiftKey" class="mod xl">Shift</button>
-                    <button data-key="Z" class="k">Z</button>
-                    <button data-key="X" class="k">X</button>
-                    <button data-key="C" class="k">C</button>
-                    <button data-key="V" class="k">V</button>
-                    <button data-key="B" class="k">B</button>
-                    <button data-key="N" class="k">N</button>
-                    <button data-key="M" class="k">M</button>
-                    <button data-key="," data-shift="<" class="dual-key"><span class="shift-char">&lt;</span><span
-                            class="main-char">,</span></button>
-                    <button data-key="." data-shift=">" class="dual-key"><span class="shift-char">&gt;</span><span
-                            class="main-char">.</span></button>
-                    <button data-key="/" data-shift="?" class="dual-key"><span class="shift-char">?</span><span
-                            class="main-char">/</span></button>
-                    <button data-key="ArrowUp" class="k">▲</button>
-                </div>
-
-                <!-- Row 6: Bottom -->
-                <div class="row">
-                    <button id="ctrlKey" class="mod med">Ctrl</button>
-                    <button id="winKey" class="mod sm">Win</button>
-                    <button id="altKey" class="mod sm">Alt</button>
-                    <button data-key="Space" class="space">Space</button>
-                    <button data-key="ArrowLeft" class="k">◀</button>
-                    <button data-key="ArrowDown" class="k">▼</button>
-                    <button data-key="ArrowRight" class="k">▶</button>
-                </div>
-            </div>
-
-            <!-- Media Keys -->
-            <div class="media">
-                <button data-key="VolumeMute">🔇</button>
-                <button data-key="VolumeDown">🔉</button>
-                <button data-key="VolumeUp">🔊</button>
-                <button data-key="MediaPrevTrack">⏮</button>
-                <button data-key="MediaPlayPause">⏯</button>
-                <button data-key="MediaNextTrack">⏭</button>
             </div>
         </div>
     </div>
@@ -456,36 +466,56 @@
             <!-- App Settings Section -->
             <div class="settings-section">
                 <h3 class="settings-section-title">App Settings</h3>
-                <div class="settings-card">
-                    <div class="settings-item">
-                        <label for="splashDurationInput">Splash Screen Duration</label>
-                        <div class="slider-container">
-                            <input type="range" id="splashDurationInput" min="0" max="10000" step="500" value="2500">
-                            <span id="splashDurationValue">2.5s</span>
+                <div class="settings-list">
+                    <div class="settings-row">
+                        <div class="settings-row-label">
+                            <span class="settings-row-title">Splash Screen Duration</span>
+                            <span class="settings-row-subtitle">Auto-hide after this duration</span>
                         </div>
-                        <small>0 to 10 seconds (auto-saves)</small>
-                    </div>
-                    <div class="settings-item">
-                        <label for="typingDelayInput">Stability Delay (ms)</label>
-                        <div class="slider-container">
-                            <input type="range" id="typingDelayInput" min="10" max="500" step="10" value="50">
-                            <span id="typingDelayValue">50 ms</span>
+                        <div class="settings-stepper">
+                            <input type="number" id="splashDurationInput" class="settings-num-input" value="2.5" min="0"
+                                max="10" step="0.5" inputmode="decimal">
+                            <span class="settings-row-unit">s</span>
+                            <div class="stepper-arrows">
+                                <button id="splashDurationPlus" class="stepper-arrow stepper-up">&#9650;</button>
+                                <button id="splashDurationMinus" class="stepper-arrow stepper-down">&#9660;</button>
+                            </div>
                         </div>
-                        <small>Wait for text to stabilize before sending</small>
                     </div>
-                    <div class="settings-item">
-                        <label class="login-checkbox" style="margin: 0;">
+                    <div class="settings-row">
+                        <div class="settings-row-label">
+                            <span class="settings-row-title">Stability Delay</span>
+                            <span class="settings-row-subtitle">Wait for text to stabilize before sending</span>
+                        </div>
+                        <div class="settings-stepper">
+                            <input type="number" id="typingDelayInput" class="settings-num-input" value="50" min="10"
+                                max="500" step="10" inputmode="numeric">
+                            <span class="settings-row-unit">ms</span>
+                            <div class="stepper-arrows">
+                                <button id="typingDelayPlus" class="stepper-arrow stepper-up">&#9650;</button>
+                                <button id="typingDelayMinus" class="stepper-arrow stepper-down">&#9660;</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="settings-row">
+                        <div class="settings-row-label">
+                            <span class="settings-row-title">Haptic Feedback</span>
+                            <span class="settings-row-subtitle">Vibrate on interactions</span>
+                        </div>
+                        <label class="toggle-switch">
                             <input type="checkbox" id="hapticFeedbackInput" checked>
-                            <span>Haptic Feedback (Vibration)</span>
+                            <div class="toggle-slider"></div>
                         </label>
                     </div>
-                    <div class="settings-item">
+                    <div class="settings-row">
+                        <div class="settings-row-label">
+                            <span class="settings-row-title">Floating Overlay Bubble</span>
+                            <span class="settings-row-subtitle">Show input bubble on top of other apps</span>
+                        </div>
                         <label class="toggle-switch">
-                            <span>Floating Overlay Bubble</span>
                             <input type="checkbox" id="overlayBubbleInput">
                             <div class="toggle-slider"></div>
                         </label>
-                        <small>Show input bubble on top of other apps</small>
                     </div>
                 </div>
             </div>
@@ -493,37 +523,54 @@
             <!-- Screen Settings Section -->
             <div class="settings-section">
                 <h3 class="settings-section-title">Screen Settings</h3>
-                <div class="settings-card">
-                    <div class="settings-item">
-                        <label>X Offset (Left/Right)</label>
-                        <div class="offset-control">
-                            <button id="screenOffsetXMinus" class="offset-btn">−</button>
-                            <input type="range" id="screenOffsetX" min="-200" max="200" step="10" value="0">
-                            <button id="screenOffsetXPlus" class="offset-btn">+</button>
-                            <input type="number" id="screenOffsetXValue" class="offset-input" value="0">
-                            <span>px</span>
+                <div class="settings-list">
+                    <div class="settings-row">
+                        <div class="settings-row-label">
+                            <span class="settings-row-title">X Offset</span>
+                            <span class="settings-row-subtitle">Shift screen left or right</span>
+                        </div>
+                        <div class="settings-stepper">
+                            <input type="number" id="screenOffsetXValue" class="settings-num-input" value="0" min="-200"
+                                max="200" step="10" inputmode="numeric">
+                            <span class="settings-row-unit">px</span>
+                            <div class="stepper-arrows">
+                                <button id="screenOffsetXPlus" class="stepper-arrow stepper-up">&#9650;</button>
+                                <button id="screenOffsetXMinus" class="stepper-arrow stepper-down">&#9660;</button>
+                            </div>
                         </div>
                     </div>
-                    <div class="settings-item">
-                        <label>Y Offset (Up/Down)</label>
-                        <div class="offset-control">
-                            <button id="screenOffsetYMinus" class="offset-btn">−</button>
-                            <input type="range" id="screenOffsetY" min="-200" max="200" step="10" value="0">
-                            <button id="screenOffsetYPlus" class="offset-btn">+</button>
-                            <input type="number" id="screenOffsetYValue" class="offset-input" value="0">
-                            <span>px</span>
+                    <div class="settings-row">
+                        <div class="settings-row-label">
+                            <span class="settings-row-title">Y Offset</span>
+                            <span class="settings-row-subtitle">Shift screen up or down</span>
+                        </div>
+                        <div class="settings-stepper">
+                            <input type="number" id="screenOffsetYValue" class="settings-num-input" value="0" min="-200"
+                                max="200" step="10" inputmode="numeric">
+                            <span class="settings-row-unit">px</span>
+                            <div class="stepper-arrows">
+                                <button id="screenOffsetYPlus" class="stepper-arrow stepper-up">&#9650;</button>
+                                <button id="screenOffsetYMinus" class="stepper-arrow stepper-down">&#9660;</button>
+                            </div>
                         </div>
                     </div>
-                    <div class="settings-item">
-                        <label>Zoom Level</label>
-                        <div class="offset-control">
-                            <input type="range" id="screenZoom" min="50" max="400" step="5" value="100">
-                            <input type="number" id="screenZoomValue" class="offset-input" value="100">
-                            <span>%</span>
+                    <div class="settings-row">
+                        <div class="settings-row-label">
+                            <span class="settings-row-title">Zoom Level</span>
+                            <span class="settings-row-subtitle">Scale the screen view</span>
+                        </div>
+                        <div class="settings-stepper">
+                            <input type="number" id="screenZoomValue" class="settings-num-input" value="100" min="50"
+                                max="400" step="5" inputmode="numeric">
+                            <span class="settings-row-unit">%</span>
+                            <div class="stepper-arrows">
+                                <button id="screenZoomPlus" class="stepper-arrow stepper-up">&#9650;</button>
+                                <button id="screenZoomMinus" class="stepper-arrow stepper-down">&#9660;</button>
+                            </div>
                         </div>
                     </div>
-                    <button id="resetScreenSettings" class="settings-reset-btn">Reset to Default</button>
                 </div>
+                <button id="resetScreenSettings" class="settings-reset-btn">Reset to Default</button>
             </div>
         </div>
     </div>

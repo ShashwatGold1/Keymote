@@ -24,7 +24,11 @@
       "Bash(xargs:*)",
       "Bash(python:*)",
       "Bash(curl:*)",
-      "Bash(copy:*)"
+      "Bash(copy:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(test:*)",
+      "Bash(file:*)"
     ]
   }
 }
